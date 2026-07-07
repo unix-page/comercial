@@ -35,7 +35,7 @@ const firebaseConfig = {
   appId: '1:602637992147:web:fc930856cc72f598a31426'
 };
 
-const APP_VERSION = 'Comercial Site v1.1.1';
+const APP_VERSION = 'Comercial Site v1.1.2';
 const BOOTSTRAP_ADMIN_EMAIL = 'crfenxuto01@gmail.com';
 
 const STATUS_LABELS = {
@@ -508,14 +508,18 @@ function startTicketStreams() {
   const snapshotMaps = [];
   const queries = [];
 
+  // Firestore rules não funcionam como filtro automático.
+  // Toda consulta precisa provar para as regras que só está lendo chamados do Comercial.
+  const comercialOnly = where('tipoChamado', '==', 'nf_divergencia_comercial');
+
   if (isAdmin()) {
-    queries.push(query(collection(db, 'comercial_chamados'), limit(1600)));
+    queries.push(query(collection(db, 'comercial_chamados'), comercialOnly, limit(1600)));
   } else if (Array.isArray(state.profile?.filasTratamento) && state.profile.filasTratamento.length) {
     state.profile.filasTratamento.forEach((fila) => {
-      queries.push(query(collection(db, 'comercial_chamados'), where('fila', '==', fila), limit(700)));
+      queries.push(query(collection(db, 'comercial_chamados'), comercialOnly, where('fila', '==', fila), limit(700)));
     });
   } else {
-    queries.push(query(collection(db, 'comercial_chamados'), where('abertoPor', '==', state.user.uid), limit(700)));
+    queries.push(query(collection(db, 'comercial_chamados'), comercialOnly, where('abertoPor', '==', state.user.uid), limit(700)));
   }
 
   queries.forEach((q, index) => {
@@ -528,8 +532,11 @@ function startTicketStreams() {
       els.liveStatus.textContent = `${state.tickets.length} chamado(s) carregado(s) • ${APP_VERSION}`;
     }, (error) => {
       console.error(error);
-      els.liveStatus.textContent = 'Erro ao carregar chamados. Confira regras/permissões.';
-      showToast('Erro ao carregar chamados do Comercial.', 'error');
+      const permission = error?.code === 'permission-denied';
+      els.liveStatus.textContent = permission
+        ? 'Permissão negada ao carregar chamados. Atualize o script/site e confira as rules.'
+        : 'Erro ao carregar chamados. Confira regras/permissões.';
+      showToast(permission ? 'Permissão negada ao carregar chamados. Consulta ajustada para rules v1.0.6+.' : 'Erro ao carregar chamados do Comercial.', 'error');
     });
     state.unsubTickets.push(unsub);
   });
