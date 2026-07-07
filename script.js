@@ -35,7 +35,7 @@ const firebaseConfig = {
   appId: '1:602637992147:web:fc930856cc72f598a31426'
 };
 
-const APP_VERSION = 'Comercial Site v1.1.5 econômico por período';
+const APP_VERSION = 'Comercial Site v1.1.6 data-hoje-ativas';
 const BOOTSTRAP_ADMIN_EMAIL = 'crfenxuto01@gmail.com';
 
 const STATUS_LABELS = {
@@ -241,7 +241,7 @@ function ensureDefaultPeriodFilters() {
   if (els.reportStart && !els.reportStart.value) els.reportStart.value = today;
   if (els.reportEnd && !els.reportEnd.value) els.reportEnd.value = today;
 
-  if (els.statusFilter && !els.statusFilter.value) els.statusFilter.value = 'periodo_mais_ativos';
+  if (els.statusFilter && !els.statusFilter.value) els.statusFilter.value = 'ativos';
 }
 
 function currentPeriodRange() {
@@ -612,37 +612,35 @@ function buildTicketQueriesForCurrentFilters() {
   ensureDefaultPeriodFilters();
 
   const queries = [];
-  const status = els.statusFilter?.value || 'periodo_mais_ativos';
+  const status = els.statusFilter?.value || 'ativos';
   const period = currentPeriodRange();
   const scopes = baseTicketScopes();
 
   scopes.forEach((scope) => {
     const scopedStatus = (statusValue) => [...scope, where('status', '==', statusValue)];
+    const scopedPeriod = [...scope, where('criadoEm', '>=', period.startDate), where('criadoEm', '<=', period.endDate)];
 
-    if (status === 'periodo_mais_ativos') {
-      // Padrão pedido:
-      // - chamados criados no período selecionado, por padrão hoje;
-      // - + chamados ativos de outras datas.
-      pushUniqueQuery(queries, [...scope, where('criadoEm', '>=', period.startDate), where('criadoEm', '<=', period.endDate)], 350);
+    // Ativas = abertas + reabertas + em tratamento, de QUALQUER DATA.
+    // Assim nada antigo ativo fica perdido por causa do filtro de data.
+    if (status === 'ativos') {
       pushUniqueQuery(queries, scopedStatus('aberto'), 350);
       pushUniqueQuery(queries, scopedStatus('reaberto'), 350);
 
-      // Em tratamento:
-      // - Admin vê todos ativos.
-      // - Compras/Cadastro veem só as próprias reservas no padrão.
-      // - Se quiser todos em tratamento da fila, escolha Status = Em tratamento.
-      if (isAdmin()) {
+      if (isAdmin() || !Array.isArray(state.profile?.filasTratamento) || !state.profile.filasTratamento.length) {
         pushUniqueQuery(queries, scopedStatus('em_tratamento'), 350);
-      } else if (Array.isArray(state.profile?.filasTratamento) && state.profile.filasTratamento.length) {
-        pushUniqueQuery(queries, [...scopedStatus('em_tratamento'), where('operadorTratamentoId', '==', state.user.uid)], 250);
       } else {
-        pushUniqueQuery(queries, scopedStatus('em_tratamento'), 250);
+        // No padrão da tela, operador vê só as próprias reservas em tratamento.
+        // Para ver todos em tratamento da fila, escolha Status = Em tratamento.
+        pushUniqueQuery(queries, [...scopedStatus('em_tratamento'), where('operadorTratamentoId', '==', state.user.uid)], 250);
       }
 
       return;
     }
 
-    if (status === 'ativos') {
+    // Todos = tudo do período selecionado + ativas antigas.
+    // Finalizados antigos NÃO entram.
+    if (status === 'todos') {
+      pushUniqueQuery(queries, scopedPeriod, 500);
       pushUniqueQuery(queries, scopedStatus('aberto'), 350);
       pushUniqueQuery(queries, scopedStatus('reaberto'), 350);
 
@@ -655,24 +653,19 @@ function buildTicketQueriesForCurrentFilters() {
       return;
     }
 
-    if (status === 'todos') {
-      // "Todos" precisa respeitar período para não carregar histórico inteiro.
-      pushUniqueQuery(queries, [...scope, where('criadoEm', '>=', period.startDate), where('criadoEm', '<=', period.endDate)], 500);
-      return;
-    }
-
+    // Em tratamento explícito = todos em tratamento da fila/perfil, independente da data.
     if (status === 'em_tratamento') {
-      // Quando escolher Em tratamento explicitamente, mostra todos da fila/perfil.
       pushUniqueQuery(queries, scopedStatus('em_tratamento'), 500);
       return;
     }
 
-    if (ACTIVE_STATUSES.includes(status)) {
+    // Abertas/reabertas explícitas = independente da data, porque também são ativas.
+    if (status === 'aberto' || status === 'reaberto') {
       pushUniqueQuery(queries, scopedStatus(status), 500);
       return;
     }
 
-    // Status final: sempre limitado ao período selecionado.
+    // Status final = somente dentro do período selecionado.
     pushUniqueQuery(queries, [...scopedStatus(status), where('criadoEm', '>=', period.startDate), where('criadoEm', '<=', period.endDate)], 500);
   });
 
@@ -695,7 +688,7 @@ async function loadTicketsOnce() {
 
     if (els.liveStatus) {
       const period = currentPeriodRange();
-      els.liveStatus.textContent = `Carregando período ${period.startValue} até ${period.endValue} • ${APP_VERSION}`;
+      els.liveStatus.textContent = `Carregando data ${period.startValue} até ${period.endValue} + ativas antigas • ${APP_VERSION}`;
     }
 
     const queryDefs = buildTicketQueriesForCurrentFilters();
@@ -717,7 +710,7 @@ async function loadTicketsOnce() {
 
     const visibleCount = filteredTickets().length;
     if (els.liveStatus) {
-      els.liveStatus.textContent = `${visibleCount} visível(eis) de ${state.tickets.length} lido(s) • ${readBatches} consulta(s) • ${APP_VERSION}`;
+      els.liveStatus.textContent = `${visibleCount} visível(eis) de ${state.tickets.length} lido(s) • data + ativas antigas • ${APP_VERSION}`;
     }
   } catch (error) {
     console.error(error);
@@ -812,7 +805,7 @@ async function loadUsersAdmin() {
 function filteredTickets(base = state.tickets) {
   const search = normalizeAscii(els.searchInput.value);
   const fila = els.filaFilter.value;
-  const status = els.statusFilter.value || 'periodo_mais_ativos';
+  const status = els.statusFilter.value || 'ativos';
   const compradorId = els.compradorFilter.value;
   const period = currentPeriodRange();
 
@@ -826,17 +819,19 @@ function filteredTickets(base = state.tickets) {
     if (search && !ticketSearchText(ticket).includes(search)) return false;
     if (fila !== 'todos' && ticket.fila !== fila) return false;
 
-    if (status === 'periodo_mais_ativos') {
-      if (!inPeriod && !isActive) return false;
-    } else if (status === 'ativos') {
+    if (status === 'ativos') {
       if (!isActive) return false;
-    } else if (status !== 'todos' && ticketStatus !== status) {
-      return false;
     } else if (status === 'todos') {
+      // Data filtra o histórico/finalizados, mas nunca esconde ativas antigas.
+      if (!inPeriod && !isActive) return false;
+    } else if (ACTIVE_STATUSES.includes(status)) {
+      if (ticketStatus !== status) return false;
+    } else {
+      // Status final explícito: respeita a data.
+      if (ticketStatus !== status) return false;
       if (!inPeriod) return false;
     }
 
-    if (FINAL_STATUSES.includes(status) && !inPeriod) return false;
     if (compradorId !== 'todos' && ticket.compradorId !== compradorId) return false;
 
     return true;
