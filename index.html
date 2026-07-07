@@ -1,29 +1,262 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Meu Primeiro Site no GitHub Pages</title>
-  <link rel="stylesheet" href="style.css" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Comercial • Divergências NF</title>
+  <link rel="icon" type="image/png" href="./comercial.png?v=1" />
+  <link rel="shortcut icon" type="image/png" href="./comercial.png?v=1" />
+  <link rel="apple-touch-icon" href="./comercial.png?v=1" />
+  <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <main class="card">
-    <p class="tag">Projeto no ar 🚀</p>
+  <div id="toast" class="toast hidden"></div>
 
-    <h1>Olá, mundo!</h1>
+  <main id="authView" class="auth-shell">
+    <section class="auth-card">
+      <div class="brand auth-brand">
+        <img src="./comercial.png" alt="Comercial" class="brand-logo" />
+        <div>
+          <h1>Comercial</h1>
+          <p>Divergências comerciais e cadastro</p>
+        </div>
+      </div>
 
-    <p>
-      Esse é meu primeiro site publicado no GitHub Pages.
-      Depois que funcionar, vamos trocar tudo e transformar em algo maior.
-    </p>
+      <div class="tabs">
+        <button id="tabLogin" class="tab active" type="button">Entrar</button>
+        <button id="tabRegister" class="tab" type="button">Criar conta</button>
+      </div>
 
-    <button id="botaoMensagem">
-      Clique para testar o JavaScript
-    </button>
+      <form id="authForm" class="stack">
+        <label id="nameField" class="field hidden">
+          <span>Nome</span>
+          <input id="displayNameInput" autocomplete="name" placeholder="Ex.: Elias Araújo" />
+        </label>
 
-    <p id="mensagem" class="mensagem"></p>
+        <label class="field">
+          <span>E-mail</span>
+          <input id="emailInput" type="email" autocomplete="email" placeholder="seu@email.com" required />
+        </label>
+
+        <label class="field">
+          <span>Senha</span>
+          <input id="passwordInput" type="password" autocomplete="current-password" placeholder="Sua senha" required minlength="6" />
+        </label>
+
+        <button id="authSubmitBtn" class="btn primary" type="submit">Entrar</button>
+      </form>
+
+      <div class="divider"><span>ou</span></div>
+
+      <button id="googleBtn" class="btn google" type="button">
+        <strong>G</strong> Entrar/Criar com Google
+      </button>
+
+      <button id="resetPasswordBtn" class="btn link-btn" type="button">Definir ou recuperar senha por e-mail</button>
+
+      <div id="connectionHelp" class="notice hidden"></div>
+      <p class="muted center small-text">Conta nova entra como usuário CRF. O admin pode transformar em Compras, Cadastro ou Admin.</p>
+    </section>
   </main>
 
-  <script src="script.js"></script>
+  <main id="blockedView" class="auth-shell hidden">
+    <section class="auth-card danger-card">
+      <h1>Acesso bloqueado</h1>
+      <p>Sua conta está desativada. Fale com o administrador do Comercial.</p>
+      <button id="logoutBlockedBtn" class="btn ghost" type="button">Sair</button>
+    </section>
+  </main>
+
+  <main id="appView" class="app hidden">
+    <header class="topbar card">
+      <div class="brand inline">
+        <img src="./comercial.png" alt="Comercial" class="brand-logo" />
+        <div>
+          <h1>Comercial</h1>
+          <p id="userLine">—</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button id="dashboardBtn" class="btn ghost active" type="button">Fila</button>
+        <button id="reportsBtn" class="btn ghost admin-only hidden" type="button">Relatórios</button>
+        <button id="adminBtn" class="btn ghost admin-only hidden" type="button">Admin</button>
+        <button id="logoutBtn" class="btn ghost" type="button">Sair</button>
+      </div>
+    </header>
+
+    <section id="dashboardView">
+      <section class="summary-grid">
+        <article class="metric card"><span>Abertos</span><strong id="countAberto">0</strong></article>
+        <article class="metric card"><span>Em tratamento</span><strong id="countTratamento">0</strong></article>
+        <article class="metric card"><span>Resolvidos</span><strong id="countResolvido">0</strong></article>
+        <article class="metric card"><span>Cancelados</span><strong id="countCancelado">0</strong></article>
+        <article class="metric card"><span>Total visível</span><strong id="countTotal">0</strong></article>
+      </section>
+
+      <section class="filters card">
+        <label class="field grow">
+          <span>Buscar</span>
+          <input id="searchInput" placeholder="NF, chave, CNPJ, fornecedor, comprador ou chamado" />
+        </label>
+        <label class="field compact">
+          <span>Fila</span>
+          <select id="filaFilter">
+            <option value="todos">Todas</option>
+            <option value="compras">Compras</option>
+            <option value="cadastro">Cadastro</option>
+          </select>
+        </label>
+        <label class="field compact">
+          <span>Status</span>
+          <select id="statusFilter">
+            <option value="ativos">Ativos</option>
+            <option value="todos">Todos</option>
+            <option value="aberto">Aberto</option>
+            <option value="em_tratamento">Em tratamento</option>
+            <option value="resolvido">Resolvido</option>
+            <option value="cancelado">Cancelado</option>
+          </select>
+        </label>
+        <label class="field compact">
+          <span>Comprador</span>
+          <select id="compradorFilter"><option value="todos">Todos</option></select>
+        </label>
+        <label class="field compact">
+          <span>Inicial</span>
+          <input id="dateStart" type="date" />
+        </label>
+        <label class="field compact">
+          <span>Final</span>
+          <input id="dateEnd" type="date" />
+        </label>
+      </section>
+
+      <section class="card table-card">
+        <div class="section-head">
+          <div>
+            <h2>Fila de divergências</h2>
+            <p id="liveStatus" class="muted">Carregando chamados...</p>
+          </div>
+          <button id="refreshBtn" class="btn ghost small" type="button">Atualizar</button>
+        </div>
+        <div class="table-wrap">
+          <table class="tickets-table">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Reserva</th>
+                <th>NF / CNPJ</th>
+                <th>Fornecedor</th>
+                <th>Divergência</th>
+                <th>Comprador</th>
+                <th>Aberto por</th>
+                <th>Tempo</th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody id="ticketTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="reportsView" class="hidden">
+      <section class="card reports-card">
+        <div class="section-head">
+          <div>
+            <h2>Relatórios do Comercial</h2>
+            <p class="muted">Gráficos com base nos chamados carregados no Firebase.</p>
+          </div>
+          <button id="generateReportsBtn" class="btn primary" type="button">Gerar relatório</button>
+        </div>
+        <div class="report-filters">
+          <label class="field compact"><span>Inicial</span><input id="reportStart" type="date" /></label>
+          <label class="field compact"><span>Final</span><input id="reportEnd" type="date" /></label>
+          <label class="field compact"><span>Fila</span><select id="reportFila"><option value="todos">Todas</option><option value="compras">Compras</option><option value="cadastro">Cadastro</option></select></label>
+        </div>
+      </section>
+      <section id="reportsOutput" class="report-grid"></section>
+    </section>
+
+    <section id="adminView" class="hidden">
+      <section class="admin-grid">
+        <article class="card admin-card">
+          <div class="section-head"><h2>Tipos de divergência</h2></div>
+          <div class="row-form">
+            <select id="adminTipoFila">
+              <option value="compras">Compras</option>
+              <option value="cadastro">Cadastro</option>
+            </select>
+            <input id="adminTipoNome" placeholder="Novo tipo de divergência" />
+            <button id="addTipoBtn" class="btn primary" type="button">+</button>
+          </div>
+          <div id="tiposList" class="mini-list"></div>
+        </article>
+
+        <article class="card admin-card">
+          <div class="section-head"><h2>Compradores</h2></div>
+          <div class="row-form two">
+            <input id="buyerNameInput" placeholder="Nome do comprador" />
+            <button id="addBuyerBtn" class="btn primary" type="button">+</button>
+          </div>
+          <div id="buyersList" class="mini-list"></div>
+        </article>
+
+        <article class="card admin-card wide-admin-card">
+          <div class="section-head">
+            <div>
+              <h2>Usuários</h2>
+              <p class="muted">O usuário aparece aqui depois do primeiro login. Depois o admin define o papel.</p>
+            </div>
+          </div>
+          <div id="usersList" class="users-list"></div>
+        </article>
+      </section>
+    </section>
+  </main>
+
+  <dialog id="ticketDialog" class="modal wide">
+    <div class="modal-card">
+      <div class="section-head modal-head">
+        <div>
+          <h2 id="detailTitle">Divergência</h2>
+          <p id="detailSub" class="muted">—</p>
+        </div>
+        <button class="icon-btn" type="button" data-close-dialog="ticketDialog">×</button>
+      </div>
+
+      <div id="detailFacts" class="detail-facts"></div>
+
+      <div class="detail-grid">
+        <section>
+          <h3>Linha do tempo</h3>
+          <div id="historyList" class="history-list"></div>
+        </section>
+
+        <section class="response-card">
+          <h3>Responder chamado</h3>
+          <label class="field">
+            <span>Status</span>
+            <select id="detailStatus">
+              <option value="aberto">Aberto</option>
+              <option value="em_tratamento">Em tratamento</option>
+              <option value="resolvido">Resolvido</option>
+              <option value="cancelado">Cancelado</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Resposta</span>
+            <textarea id="responseText" placeholder="Digite a tratativa, retorno ao CRF, orientação ou conclusão..."></textarea>
+          </label>
+          <div class="modal-actions">
+            <button id="reserveFromModalBtn" class="btn ghost" type="button">Reservar</button>
+            <button id="saveResponseBtn" class="btn primary" type="button">Salvar resposta</button>
+          </div>
+        </section>
+      </div>
+    </div>
+  </dialog>
+
+  <script type="module" src="./script.js"></script>
 </body>
 </html>
