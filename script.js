@@ -35,7 +35,7 @@ const firebaseConfig = {
   appId: '1:602637992147:web:fc930856cc72f598a31426'
 };
 
-const APP_VERSION = 'Comercial Site v1.1.0';
+const APP_VERSION = 'Comercial Site v1.1.1';
 const BOOTSTRAP_ADMIN_EMAIL = 'crfenxuto01@gmail.com';
 
 const STATUS_LABELS = {
