@@ -461,6 +461,52 @@
     return Array.isArray(entry.tickets) ? entry.tickets : [];
   }
 
+  function clearCachedTicketsForChave(chave) {
+    const clean = digitsOnly(chave || '');
+    const key = cacheKey(clean);
+
+    if (key) {
+      const cache = readCache();
+      if (cache[key]) {
+        delete cache[key];
+        writeCache(cache);
+      }
+    }
+
+    state.userTicketsByChave.delete(clean);
+
+    for (const [id, ticket] of state.userTicketsById.entries()) {
+      if (digitsOnly(ticket?.chave || '') === clean) state.userTicketsById.delete(id);
+    }
+
+    state.chaveLookupAt.delete(clean);
+  }
+
+  function forgetTicketFromCache(chave, ticketId) {
+    const clean = digitsOnly(chave || '');
+    const id = String(ticketId || '');
+    if (!clean || !id) return;
+
+    const key = cacheKey(clean);
+    if (key) {
+      const cache = readCache();
+      const entry = cache[key];
+      if (entry && Array.isArray(entry.tickets)) {
+        entry.tickets = entry.tickets.filter((ticket) => ticket?.id !== id);
+        if (entry.tickets.length) cache[key] = entry;
+        else delete cache[key];
+        writeCache(cache);
+      }
+    }
+
+    const list = state.userTicketsByChave.get(clean) || [];
+    const next = list.filter((ticket) => ticket?.id !== id);
+    if (next.length) state.userTicketsByChave.set(clean, next);
+    else state.userTicketsByChave.delete(clean);
+
+    state.userTicketsById.delete(id);
+  }
+
   function rememberTicketInMaps(ticket) {
     if (!ticket?.id) return;
 
@@ -653,6 +699,7 @@
       state.chaveLookupAt.set(clean, Date.now());
 
       const found = new Map();
+      const staleIds = [];
 
       const addTicket = (ticket) => {
         if (ticket?.id && !found.has(ticket.id)) {
@@ -665,11 +712,13 @@
       const canonical = await readTicketRefIfExists(canonicalRef);
       if (canonical?.ticket) addTicket(canonical.ticket);
 
-      // Verifica tickets que já estavam no cache local, porque versões antigas podiam ter ID por chave+fila+tipo.
+      // Verifica tickets do cache local. Se o documento foi apagado no Firebase,
+      // o cache local é removido para não tentar atualizar registro inexistente.
       for (const cached of knownTickets(clean).slice(0, 8)) {
         if (!cached?.id || found.has(cached.id)) continue;
         const checked = await readTicketRefIfExists(db.collection('comercial_chamados').doc(cached.id));
         if (checked?.ticket) addTicket(checked.ticket);
+        else staleIds.push(cached.id);
       }
 
       try {
@@ -683,10 +732,16 @@
         console.warn('[Comercial] Consulta por chaveBusca falhou:', error);
       }
 
+      if (found.size === 0) {
+        clearCachedTicketsForChave(clean);
+      } else {
+        staleIds.forEach((id) => forgetTicketFromCache(clean, id));
+      }
+
       renderCardsForChave(clean);
       syncVisibleKnownMonitors();
 
-      return knownTickets(clean);
+      return [...found.values()];
     })().finally(() => {
       state.chaveLookupPromises.delete(clean);
     });
@@ -710,9 +765,10 @@
   async function findExistingTicketForSave(chave) {
     const clean = digitsOnly(chave || '');
 
-    await lookupTicketsByChave(clean, true);
+    // Força consulta no banco. O localStorage nunca decide sozinho se existe chamado.
+    const freshTickets = await lookupTicketsByChave(clean, true);
 
-    const mainTicket = chooseMainTicketForChave(knownTickets(clean));
+    const mainTicket = chooseMainTicketForChave(freshTickets);
 
     if (mainTicket?.id) {
       return {
@@ -722,6 +778,7 @@
       };
     }
 
+    clearCachedTicketsForChave(clean);
     const ref = db.collection('comercial_chamados').doc(comercialDocIdUnico(clean));
     return { exists: false, ref, ticket: null };
   }
@@ -1701,12 +1758,12 @@
     if (defaultBtn) defaultBtn.style.display = state.divergenciasConfigExists ? 'none' : '';
   }
 
-  function renderFilaOptions() {
+  function renderFilaOptions(preserve = true) {
     const select = $('#comercial-fila');
     if (!select) return;
 
     const config = normalizeDivergenciasConfig(state.divergenciasConfig || DEFAULT_DIVERGENCIAS);
-    const previous = select.value || '';
+    const previous = preserve ? (select.value || '') : '';
 
     select.innerHTML = '';
 
@@ -1726,7 +1783,7 @@
     renderBuyerRequirement();
   }
 
-  function renderDivergenciaOptions() {
+  function renderDivergenciaOptions(preserve = true) {
     const select = $('#comercial-tipo-divergencia');
     const fila = $('#comercial-fila')?.value || '';
     if (!select) return;
@@ -1734,7 +1791,7 @@
     const config = normalizeDivergenciasConfig(state.divergenciasConfig || DEFAULT_DIVERGENCIAS);
     const tipos = fila ? (config[fila]?.tipos || []) : [];
 
-    const previous = select.value || '';
+    const previous = preserve ? (select.value || '') : '';
     select.innerHTML = '';
 
     const empty = document.createElement('option');
@@ -1899,11 +1956,49 @@
   /********************************************************************
    * MODAL E LOGIN
    ********************************************************************/
+  function resetModalFormForNewCard() {
+    closeTypeManager();
+    closeBuyerManager();
+
+    state.activeFornecedor = null;
+    state.activeFornecedorRef = null;
+    state.isSaving = false;
+
+    const info = $('#comercial-info');
+    if (info) info.innerHTML = '';
+
+    const comment = $('#comercial-comment');
+    if (comment) comment.value = '';
+
+    const fila = $('#comercial-fila');
+    if (fila) fila.value = '';
+
+    const tipo = $('#comercial-tipo-divergencia');
+    if (tipo) {
+      tipo.innerHTML = '<option value="">Selecione a fila primeiro</option>';
+      tipo.value = '';
+    }
+
+    const comprador = $('#comercial-comprador');
+    if (comprador) {
+      comprador.innerHTML = '<option value="">Nenhum comprador vinculado ao CNPJ</option>';
+      comprador.value = '';
+    }
+
+    const saveBtn = $('#comercial-save');
+    if (saveBtn) {
+      saveBtn.textContent = 'Salvar Comercial';
+      saveBtn.disabled = !canOpenTicket();
+    }
+  }
+
   async function openModal(card) {
     if (!isTargetCard(card)) {
       showToast('O Comercial está habilitado apenas na coluna Em Análise Terceiro.', 'error');
       return;
     }
+
+    resetModalFormForNewCard();
 
     state.activeCard = card;
     state.activeData = parseCard(card);
@@ -1916,7 +2011,6 @@
     }
 
     $('#comercial-info').innerHTML = renderActiveDataInfo(state.activeData);
-    $('#comercial-comment').value = '';
 
     if (state.user && !state.profile) await loadProfileIfNeeded(false);
 
@@ -1924,13 +2018,17 @@
 
     await loadDivergenciasConfig(false);
     await loadCompradoresConfig(false);
-    renderFilaOptions();
-    renderDivergenciaOptions();
+    renderFilaOptions(false);
+    renderDivergenciaOptions(false);
     renderConfigControls();
+    renderCompradorSelect();
 
     $('#comercial-overlay').classList.add('open');
 
     if (state.user && state.profile) {
+      // Ao abrir o formulário, a fonte da verdade é o Firestore.
+      // Cache/localStorage só é usado depois que o documento foi confirmado no banco.
+      await lookupTicketsByChave(state.activeData.chave, true);
       await loadFornecedorCompradores(state.activeData);
     } else {
       renderCompradorSelect();
