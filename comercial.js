@@ -708,7 +708,7 @@
       } else if (usingLinkedList && options.length > 1) {
         hint.textContent = 'Mais de 1 comprador vinculado ao CNPJ: escolha quem vai tratar.';
       } else if (!todos.length) {
-        hint.textContent = 'Cadastre um comprador no botão + e ele já será vinculado ao CNPJ.';
+        hint.textContent = '';
       } else if (todos.length === 1) {
         hint.textContent = '1 comprador cadastrado no sistema; ao salvar/vincular ele será ligado ao CNPJ.';
       } else {
