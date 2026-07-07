@@ -35,17 +35,43 @@ const firebaseConfig = {
   appId: '1:602637992147:web:fc930856cc72f598a31426'
 };
 
-const APP_VERSION = 'Comercial Site v1.0.0';
+const APP_VERSION = 'Comercial Site v1.1.0';
 const BOOTSTRAP_ADMIN_EMAIL = 'crfenxuto01@gmail.com';
 
 const STATUS_LABELS = {
   aberto: 'Aberto',
+  reaberto: 'Reaberto',
   em_tratamento: 'Em tratamento',
+  informacoes_divergentes: 'Informação divergente',
+  pedido_corrigido: 'Pedido corrigido',
+  pronto: 'Pronto',
+  devolver_recusar: 'Devolver e recusar',
+
+  // Compatibilidade com versões antigas.
   resolvido: 'Resolvido',
   cancelado: 'Cancelado'
 };
 
-const STATUS_ORDER = { aberto: 0, em_tratamento: 1, resolvido: 2, cancelado: 3 };
+const STATUS_ORDER = {
+  reaberto: 0,
+  aberto: 1,
+  em_tratamento: 2,
+  informacoes_divergentes: 3,
+  pedido_corrigido: 4,
+  pronto: 5,
+  devolver_recusar: 6,
+  resolvido: 7,
+  cancelado: 8
+};
+
+const ACTIVE_STATUSES = ['aberto', 'reaberto', 'em_tratamento'];
+const FINAL_STATUSES = ['informacoes_divergentes', 'pedido_corrigido', 'pronto', 'devolver_recusar', 'resolvido', 'cancelado'];
+
+const STATUS_OPTIONS_BY_FILA = {
+  compras: ['aberto', 'reaberto', 'em_tratamento', 'informacoes_divergentes', 'pedido_corrigido', 'devolver_recusar'],
+  cadastro: ['aberto', 'reaberto', 'em_tratamento', 'informacoes_divergentes', 'pronto', 'devolver_recusar']
+};
+
 const DEFAULT_DIVERGENCIAS = {
   compras: {
     nome: 'Compras',
@@ -71,6 +97,7 @@ const db = getFirestore(app);
 const googleProvider = new GoogleAuthProvider();
 
 const $ = (id) => document.getElementById(id);
+
 const els = {
   toast: $('toast'),
   authView: $('authView'),
@@ -106,9 +133,12 @@ const els = {
   liveStatus: $('liveStatus'),
   tableBody: $('ticketTableBody'),
   countAberto: $('countAberto'),
+  countReaberto: $('countReaberto'),
   countTratamento: $('countTratamento'),
-  countResolvido: $('countResolvido'),
-  countCancelado: $('countCancelado'),
+  countInfoDivergente: $('countInfoDivergente'),
+  countPedidoCorrigido: $('countPedidoCorrigido'),
+  countPronto: $('countPronto'),
+  countDevolverRecusar: $('countDevolverRecusar'),
   countTotal: $('countTotal'),
   ticketDialog: $('ticketDialog'),
   detailTitle: $('detailTitle'),
@@ -148,6 +178,7 @@ const state = {
 };
 
 function showToast(message, type = 'info') {
+  if (!els.toast) return;
   els.toast.textContent = message;
   els.toast.className = `toast ${type === 'success' ? 'success' : type === 'error' ? 'error' : ''}`;
   window.clearTimeout(showToast.timer);
@@ -155,8 +186,8 @@ function showToast(message, type = 'info') {
 }
 
 function showOnly(view) {
-  [els.authView, els.blockedView, els.appView].forEach((el) => el.classList.add('hidden'));
-  view.classList.remove('hidden');
+  [els.authView, els.blockedView, els.appView].forEach((el) => el?.classList.add('hidden'));
+  view?.classList.remove('hidden');
 }
 
 function escapeHtml(value) {
@@ -169,7 +200,7 @@ function escapeHtml(value) {
 }
 
 function normalize(value) {
-  return String(value || '').replace(/\s+/g, ' ').trim();
+  return String(value || '').replace(/\u00A0/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function normalizeAscii(value) {
@@ -217,8 +248,14 @@ function formatMinutes(minutes) {
   return `${mins}min`;
 }
 
-function statusBadge(status) {
-  const safe = status || 'aberto';
+function canonicalStatus(status, fila = '') {
+  if (status === 'resolvido') return fila === 'cadastro' ? 'pronto' : 'pedido_corrigido';
+  if (status === 'cancelado') return 'devolver_recusar';
+  return status || 'aberto';
+}
+
+function statusBadge(status, fila = '') {
+  const safe = canonicalStatus(status, fila);
   return `<span class="status ${escapeHtml(safe)}">${escapeHtml(STATUS_LABELS[safe] || safe)}</span>`;
 }
 
@@ -234,8 +271,12 @@ function selectedUserName() {
   return state.profile?.nome || state.user?.displayName || state.user?.email || 'Usuário';
 }
 
+function isBootstrapAdmin(user = state.user) {
+  return user?.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL;
+}
+
 function isAdmin() {
-  return state.profile?.papel === 'admin' || state.user?.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL;
+  return state.profile?.papel === 'admin' || isBootstrapAdmin();
 }
 
 function canTreatFila(fila) {
@@ -244,19 +285,69 @@ function canTreatFila(fila) {
 }
 
 function canReserve(ticket) {
-  return ticket && ['aberto'].includes(ticket.status || 'aberto') && canTreatFila(ticket.fila);
+  const status = canonicalStatus(ticket?.status, ticket?.fila);
+  return ticket && ['aberto', 'reaberto'].includes(status) && canTreatFila(ticket.fila);
 }
 
 function canRespond(ticket) {
-  return ticket && (isAdmin() || canTreatFila(ticket.fila) || ticket.abertoPor === state.user?.uid);
+  if (!ticket) return false;
+  return isAdmin() || canTreatFila(ticket.fila) || ticket.abertoPor === state.user?.uid;
+}
+
+function canChangeStatus(ticket) {
+  return ticket && (isAdmin() || canTreatFila(ticket.fila));
+}
+
+function finalStatusFor(status) {
+  return FINAL_STATUSES.includes(status);
+}
+
+function statusOptionsForTicket(ticket) {
+  const fila = ticket?.fila || 'compras';
+  const base = STATUS_OPTIONS_BY_FILA[fila] || STATUS_OPTIONS_BY_FILA.compras;
+  const current = canonicalStatus(ticket?.status, fila);
+  return base.includes(current) ? base : [current, ...base];
+}
+
+function statusOptionHtml(status, selected = '') {
+  return `<option value="${escapeHtml(status)}" ${status === selected ? 'selected' : ''}>${escapeHtml(STATUS_LABELS[status] || status)}</option>`;
+}
+
+function renderDetailStatusOptions(ticket) {
+  if (!els.detailStatus) return;
+  const current = canonicalStatus(ticket?.status, ticket?.fila);
+
+  // CRF/solicitante comum pode comentar, mas não deve encerrar/reservar por engano.
+  if (!canChangeStatus(ticket)) {
+    els.detailStatus.innerHTML = statusOptionHtml(current, current);
+    els.detailStatus.disabled = true;
+    return;
+  }
+
+  els.detailStatus.disabled = false;
+  els.detailStatus.innerHTML = statusOptionsForTicket(ticket).map((status) => statusOptionHtml(status, current)).join('');
+  els.detailStatus.value = current;
+}
+
+function ticketStartedAtMillis(ticket) {
+  const status = canonicalStatus(ticket?.status, ticket?.fila);
+  if (status === 'em_tratamento') return timestampMillis(ticket.tratamentoIniciadoEm) || timestampMillis(ticket.atualizadoEm) || timestampMillis(ticket.criadoEm);
+  if (status === 'reaberto') return timestampMillis(ticket.reabertoEm) || timestampMillis(ticket.atualizadoEm) || timestampMillis(ticket.criadoEm);
+  return timestampMillis(ticket.criadoEm) || timestampMillis(ticket.atualizadoEm);
 }
 
 function ticketTimeLabel(ticket) {
+  const status = canonicalStatus(ticket?.status, ticket?.fila);
   const start = timestampMillis(ticket.criadoEm) || timestampMillis(ticket.atualizadoEm);
-  if (['resolvido', 'cancelado'].includes(ticket.status)) {
-    return `Total ${formatMinutes(ticket.tempoTotalMin ?? minutesBetween(start, timestampMillis(ticket.resolvidoEm) || timestampMillis(ticket.canceladoEm) || timestampMillis(ticket.atualizadoEm)))}`;
+  if (finalStatusFor(status)) {
+    const end = timestampMillis(ticket.fechadoEm)
+      || timestampMillis(ticket.resolvidoEm)
+      || timestampMillis(ticket.canceladoEm)
+      || timestampMillis(ticket.atualizadoEm);
+    return `Total ${formatMinutes(ticket.tempoTotalMin ?? minutesBetween(start, end))}`;
   }
-  return `Aberto há ${formatMinutes(minutesBetween(start))}`;
+  const statusStart = ticketStartedAtMillis(ticket);
+  return `${STATUS_LABELS[status] || 'Aberto'} há ${formatMinutes(minutesBetween(statusStart))}`;
 }
 
 function ticketSearchText(ticket) {
@@ -270,7 +361,8 @@ function ticketSearchText(ticket) {
     ticket.tipoDivergenciaNome,
     ticket.compradorNome,
     ticket.empresa,
-    ticket.abertoPorNome
+    ticket.abertoPorNome,
+    STATUS_LABELS[canonicalStatus(ticket.status, ticket.fila)]
   ].join(' '));
 }
 
@@ -343,7 +435,14 @@ async function loginOrRegister(event) {
     }
   } catch (error) {
     console.error(error);
-    showToast(error?.code === 'auth/invalid-credential' ? 'E-mail ou senha inválidos.' : (error.message || 'Erro no login.'), 'error');
+    const map = {
+      'auth/email-already-in-use': 'Esse e-mail já existe. Clique em Entrar em vez de Criar conta.',
+      'auth/invalid-credential': 'E-mail ou senha inválidos.',
+      'auth/wrong-password': 'Senha inválida.',
+      'auth/user-not-found': 'Não encontrei esse e-mail no Comercial.',
+      'auth/too-many-requests': 'Muitas tentativas. Aguarde um pouco.'
+    };
+    showToast(map[error?.code] || error.message || 'Erro no login.', 'error');
   } finally {
     els.authSubmitBtn.disabled = false;
     els.authSubmitBtn.textContent = state.mode === 'register' ? 'Criar conta' : 'Entrar';
@@ -385,16 +484,22 @@ function stopTicketStreams() {
   state.unsubTickets = [];
 }
 
+function sortTickets(tickets) {
+  return [...tickets].sort((a, b) => {
+    const aStatus = canonicalStatus(a.status, a.fila);
+    const bStatus = canonicalStatus(b.status, b.fila);
+    const s = (STATUS_ORDER[aStatus] ?? 99) - (STATUS_ORDER[bStatus] ?? 99);
+    if (s !== 0) return s;
+    return (ticketStartedAtMillis(a) || Date.now()) - (ticketStartedAtMillis(b) || Date.now());
+  });
+}
+
 function rebuildTicketsFromSnapshots(snapshotMaps) {
   const map = new Map();
   snapshotMaps.forEach((snapMap) => {
-    snapMap.forEach((ticket, id) => map.set(id, ticket));
+    snapMap.forEach((ticket, id) => map.set(id, { ...ticket, status: canonicalStatus(ticket.status, ticket.fila) }));
   });
-  state.tickets = [...map.values()].sort((a, b) => {
-    const s = (STATUS_ORDER[a.status || 'aberto'] ?? 99) - (STATUS_ORDER[b.status || 'aberto'] ?? 99);
-    if (s !== 0) return s;
-    return (timestampMillis(a.criadoEm) || Date.now()) - (timestampMillis(b.criadoEm) || Date.now());
-  });
+  state.tickets = sortTickets([...map.values()]);
   renderAll();
 }
 
@@ -404,13 +509,13 @@ function startTicketStreams() {
   const queries = [];
 
   if (isAdmin()) {
-    queries.push(query(collection(db, 'comercial_chamados'), limit(1200)));
+    queries.push(query(collection(db, 'comercial_chamados'), limit(1600)));
   } else if (Array.isArray(state.profile?.filasTratamento) && state.profile.filasTratamento.length) {
     state.profile.filasTratamento.forEach((fila) => {
-      queries.push(query(collection(db, 'comercial_chamados'), where('fila', '==', fila), limit(500)));
+      queries.push(query(collection(db, 'comercial_chamados'), where('fila', '==', fila), limit(700)));
     });
   } else {
-    queries.push(query(collection(db, 'comercial_chamados'), where('abertoPor', '==', state.user.uid), limit(500)));
+    queries.push(query(collection(db, 'comercial_chamados'), where('abertoPor', '==', state.user.uid), limit(700)));
   }
 
   queries.forEach((q, index) => {
@@ -433,7 +538,10 @@ function startTicketStreams() {
 async function loadCompradores() {
   try {
     const snap = await getDocs(collection(db, 'compradores'));
-    state.compradores = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((item) => item.ativo !== false).sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
+    state.compradores = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((item) => item.ativo !== false)
+      .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
     renderCompradorFilter();
     renderBuyersAdmin();
   } catch (error) {
@@ -468,6 +576,7 @@ function normalizeConfig(source) {
 }
 
 function renderCompradorFilter() {
+  if (!els.compradorFilter) return;
   const current = els.compradorFilter.value || 'todos';
   els.compradorFilter.innerHTML = '<option value="todos">Todos</option>';
   state.compradores.forEach((buyer) => {
@@ -483,7 +592,9 @@ async function loadUsersAdmin() {
   if (!isAdmin()) return;
   try {
     const snap = await getDocs(collection(db, 'usuarios'));
-    state.users = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => String(a.nome || a.email || '').localeCompare(String(b.nome || b.email || ''), 'pt-BR'));
+    state.users = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => String(a.nome || a.email || '').localeCompare(String(b.nome || b.email || ''), 'pt-BR'));
     renderUsersAdmin();
   } catch (error) {
     console.warn('Usuários não carregaram:', error);
@@ -499,11 +610,14 @@ function filteredTickets(base = state.tickets) {
   const end = dateInputMillis(els.dateEnd.value, true);
 
   return base.filter((ticket) => {
+    const ticketStatus = canonicalStatus(ticket.status, ticket.fila);
+
     if (search && !ticketSearchText(ticket).includes(search)) return false;
     if (fila !== 'todos' && ticket.fila !== fila) return false;
-    if (status === 'ativos' && !['aberto', 'em_tratamento'].includes(ticket.status || 'aberto')) return false;
-    if (status !== 'todos' && status !== 'ativos' && (ticket.status || 'aberto') !== status) return false;
+    if (status === 'ativos' && !ACTIVE_STATUSES.includes(ticketStatus)) return false;
+    if (status !== 'todos' && status !== 'ativos' && ticketStatus !== status) return false;
     if (compradorId !== 'todos' && ticket.compradorId !== compradorId) return false;
+
     const created = timestampMillis(ticket.criadoEm) || timestampMillis(ticket.atualizadoEm);
     if (start && created < start) return false;
     if (end && created > end) return false;
@@ -517,18 +631,27 @@ function renderAll() {
   if (isAdmin()) renderReports();
 }
 
+function setMetric(el, value) {
+  if (el) el.textContent = String(value);
+}
+
 function renderMetrics() {
   const tickets = filteredTickets();
-  const count = (status) => tickets.filter((ticket) => (ticket.status || 'aberto') === status).length;
-  els.countAberto.textContent = count('aberto');
-  els.countTratamento.textContent = count('em_tratamento');
-  els.countResolvido.textContent = count('resolvido');
-  els.countCancelado.textContent = count('cancelado');
-  els.countTotal.textContent = tickets.length;
+  const count = (status) => tickets.filter((ticket) => canonicalStatus(ticket.status, ticket.fila) === status).length;
+
+  setMetric(els.countAberto, count('aberto'));
+  setMetric(els.countReaberto, count('reaberto'));
+  setMetric(els.countTratamento, count('em_tratamento'));
+  setMetric(els.countInfoDivergente, count('informacoes_divergentes'));
+  setMetric(els.countPedidoCorrigido, count('pedido_corrigido'));
+  setMetric(els.countPronto, count('pronto'));
+  setMetric(els.countDevolverRecusar, count('devolver_recusar'));
+  setMetric(els.countTotal, tickets.length);
 }
 
 function renderTable() {
   const tickets = filteredTickets();
+
   if (!tickets.length) {
     els.tableBody.innerHTML = '<tr><td class="empty-row" colspan="9">Nenhuma divergência encontrada.</td></tr>';
     return;
@@ -537,9 +660,11 @@ function renderTable() {
   els.tableBody.innerHTML = tickets.map((ticket) => {
     const reserve = ticket.responsavelNome || ticket.operadorTratamentoNome || ticket.reservadoPorNome || '—';
     const canReserveNow = canReserve(ticket);
+    const status = canonicalStatus(ticket.status, ticket.fila);
+
     return `
       <tr data-ticket-id="${escapeHtml(ticket.id)}">
-        <td>${statusBadge(ticket.status || 'aberto')}</td>
+        <td>${statusBadge(status, ticket.fila)}</td>
         <td>${escapeHtml(reserve)}${canReserveNow ? '<span class="kicker">Disponível</span>' : ''}</td>
         <td>
           <div class="strong-line">NF ${escapeHtml(ticket.numeroNf || '—')}</div>
@@ -557,21 +682,39 @@ function renderTable() {
         <td>${escapeHtml(ticket.compradorNome || '—')}</td>
         <td>${escapeHtml(ticket.abertoPorNome || ticket.abertoPorEmail || '—')}<span class="kicker">${formatDate(ticket.criadoEm)}</span></td>
         <td>${ticketTimeLabel(ticket)}</td>
-        <td><div class="actions-cell">
-          ${canReserveNow ? `<button class="btn primary small" type="button" data-action="reserve" data-id="${escapeHtml(ticket.id)}">Reservar</button>` : ''}
-          <button class="btn ghost small" type="button" data-action="open" data-id="${escapeHtml(ticket.id)}">Abrir</button>
-        </div></td>
+        <td>
+          <div class="actions-cell">
+            ${canReserveNow ? `<button class="btn primary small" type="button" data-action="reserve" data-id="${escapeHtml(ticket.id)}">Reservar</button>` : ''}
+            <button class="btn ghost small" type="button" data-action="open" data-id="${escapeHtml(ticket.id)}">Abrir</button>
+          </div>
+        </td>
       </tr>
     `;
   }).join('');
 }
 
+function historyTextForStatus(status, customText = '') {
+  if (customText) return customText;
+  return `Status alterado para ${STATUS_LABELS[status] || status}.`;
+}
+
+async function addHistory(ref, payload) {
+  await addDoc(collection(ref, 'historico'), {
+    ...payload,
+    criadoEm: serverTimestamp()
+  });
+}
+
 async function reserveTicket(ticket) {
   if (!ticket) return;
   if (!canReserve(ticket)) return showToast('Esse chamado não pode ser reservado por este perfil.', 'error');
+
   try {
     const now = serverTimestamp();
     const ref = doc(db, 'comercial_chamados', ticket.id);
+    const statusAnterior = canonicalStatus(ticket.status, ticket.fila);
+    const texto = `Reservado por ${selectedUserName()}`;
+
     await updateDoc(ref, {
       status: 'em_tratamento',
       responsavelId: state.user.uid,
@@ -582,22 +725,25 @@ async function reserveTicket(ticket) {
       operadorTratamentoEmail: state.user.email,
       tratamentoIniciadoEm: now,
       atualizadoEm: now,
-      ultimaOcorrenciaTexto: `Reservado por ${selectedUserName()}`,
+      ultimaOcorrenciaTexto: texto,
       ultimaOcorrenciaTipo: 'reserva',
       ultimaOcorrenciaUsuarioId: state.user.uid,
       ultimaOcorrenciaUsuarioNome: selectedUserName(),
       ultimaOcorrenciaUsuarioEmail: state.user.email,
       ultimaOcorrenciaEm: now
     });
-    await addDoc(collection(ref, 'historico'), {
-      texto: `Reservado por ${selectedUserName()}`,
+
+    await addHistory(ref, {
+      texto,
       tipo: 'reserva',
       status: 'em_tratamento',
+      statusAnterior,
+      statusNovo: 'em_tratamento',
       usuarioId: state.user.uid,
       usuarioNome: selectedUserName(),
-      usuarioEmail: state.user.email,
-      criadoEm: now
+      usuarioEmail: state.user.email
     });
+
     showToast('Chamado reservado.', 'success');
   } catch (error) {
     console.error(error);
@@ -608,10 +754,13 @@ async function reserveTicket(ticket) {
 async function openTicket(ticketId) {
   const ticket = state.tickets.find((item) => item.id === ticketId);
   if (!ticket) return;
+
   state.selectedTicket = ticket;
+  const status = canonicalStatus(ticket.status, ticket.fila);
+
   els.detailTitle.textContent = `${filaLabel(ticket.fila)} • ${ticket.tipoDivergenciaNome || 'Divergência'}`;
-  els.detailSub.textContent = `NF ${ticket.numeroNf || '—'} • Chamado ${ticket.chamadoInfradeskId || '—'} • ${STATUS_LABELS[ticket.status || 'aberto'] || ticket.status}`;
-  els.detailStatus.value = ticket.status || 'aberto';
+  els.detailSub.textContent = `NF ${ticket.numeroNf || '—'} • Chamado ${ticket.chamadoInfradeskId || '—'} • ${STATUS_LABELS[status] || status}`;
+  renderDetailStatusOptions(ticket);
   els.responseText.value = '';
   els.reserveFromModalBtn.disabled = !canReserve(ticket);
 
@@ -632,27 +781,108 @@ async function openTicket(ticketId) {
 
 async function loadHistory(ticketId) {
   els.historyList.innerHTML = '<div class="muted">Carregando histórico...</div>';
+
   try {
     const snap = await getDocs(query(collection(doc(db, 'comercial_chamados', ticketId), 'historico'), limit(300)));
-    state.history = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => timestampMillis(a.criadoEm) - timestampMillis(b.criadoEm));
+
+    state.history = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => timestampMillis(a.criadoEm) - timestampMillis(b.criadoEm));
+
     if (!state.history.length) {
       els.historyList.innerHTML = '<div class="muted">Sem histórico registrado.</div>';
       return;
     }
-    els.historyList.innerHTML = state.history.map((hist) => `
-      <article class="history-item">
-        <div class="history-item-head">
-          <strong>${escapeHtml(hist.usuarioNome || hist.usuarioEmail || 'Usuário')}</strong>
-          <span class="history-type">${escapeHtml(hist.tipo || 'observacao')}</span>
-        </div>
-        <small class="muted">${formatDate(hist.criadoEm)}${hist.status ? ` • ${escapeHtml(STATUS_LABELS[hist.status] || hist.status)}` : ''}</small>
-        <p>${escapeHtml(hist.texto || '')}</p>
-      </article>
-    `).join('');
+
+    els.historyList.innerHTML = state.history.map((hist) => {
+      const status = canonicalStatus(hist.status || hist.statusNovo || '', state.selectedTicket?.fila || '');
+      const statusMeta = status ? ` • ${STATUS_LABELS[status] || status}` : '';
+      return `
+        <article class="history-item">
+          <div class="history-item-head">
+            <strong>${escapeHtml(hist.usuarioNome || hist.usuarioEmail || 'Usuário')}</strong>
+            <span class="history-type">${escapeHtml(hist.tipo || 'observacao')}</span>
+          </div>
+          <small class="muted">${formatDate(hist.criadoEm)}${escapeHtml(statusMeta)}</small>
+          <p>${escapeHtml(hist.texto || '')}</p>
+        </article>
+      `;
+    }).join('');
   } catch (error) {
     console.error(error);
     els.historyList.innerHTML = '<div class="muted">Não consegui carregar o histórico.</div>';
   }
+}
+
+function buildStatusPatch(ticket, status, text, now) {
+  const currentStatus = canonicalStatus(ticket.status, ticket.fila);
+  const start = timestampMillis(ticket.criadoEm) || Date.now();
+  const treatmentStart = timestampMillis(ticket.tratamentoIniciadoEm) || start;
+
+  const patch = {
+    status,
+    atualizadoEm: now,
+    ultimaOcorrenciaTexto: text,
+    ultimaOcorrenciaTipo: 'resposta',
+    ultimaOcorrenciaUsuarioId: state.user.uid,
+    ultimaOcorrenciaUsuarioNome: selectedUserName(),
+    ultimaOcorrenciaUsuarioEmail: state.user.email,
+    ultimaOcorrenciaEm: now
+  };
+
+  if (status === 'em_tratamento') {
+    Object.assign(patch, {
+      responsavelId: ticket.responsavelId || state.user.uid,
+      responsavelNome: ticket.responsavelNome || selectedUserName(),
+      responsavelEmail: ticket.responsavelEmail || state.user.email,
+      operadorTratamentoId: ticket.operadorTratamentoId || state.user.uid,
+      operadorTratamentoNome: ticket.operadorTratamentoNome || selectedUserName(),
+      operadorTratamentoEmail: ticket.operadorTratamentoEmail || state.user.email,
+      tratamentoIniciadoEm: ticket.tratamentoIniciadoEm || now
+    });
+  }
+
+  if (status === 'aberto' || status === 'reaberto') {
+    Object.assign(patch, {
+      responsavelId: null,
+      responsavelNome: null,
+      responsavelEmail: null,
+      operadorTratamentoId: null,
+      operadorTratamentoNome: null,
+      operadorTratamentoEmail: null,
+      tratamentoIniciadoEm: null
+    });
+  }
+
+  if (status === 'reaberto' && currentStatus !== 'reaberto') {
+    Object.assign(patch, {
+      reabertoPor: state.user.uid,
+      reabertoPorNome: selectedUserName(),
+      reabertoPorEmail: state.user.email,
+      reabertoEm: now
+    });
+  }
+
+  if (finalStatusFor(status)) {
+    Object.assign(patch, {
+      fechadoPor: state.user.uid,
+      fechadoPorNome: selectedUserName(),
+      fechadoPorEmail: state.user.email,
+      fechadoEm: now,
+      tempoAtendimentoMin: minutesBetween(treatmentStart),
+      tempoTotalMin: minutesBetween(start)
+    });
+
+    if (status === 'pedido_corrigido' || status === 'pronto') {
+      patch.resolvidoEm = now;
+    }
+
+    if (status === 'devolver_recusar') {
+      patch.canceladoEm = now;
+    }
+  }
+
+  return patch;
 }
 
 async function saveResponse() {
@@ -660,58 +890,30 @@ async function saveResponse() {
   if (!ticket) return;
   if (!canRespond(ticket)) return showToast('Seu perfil não pode responder este chamado.', 'error');
 
-  const status = els.detailStatus.value;
-  const text = normalize(els.responseText.value) || `Status alterado para ${STATUS_LABELS[status] || status}.`;
-  const start = timestampMillis(ticket.criadoEm) || Date.now();
-  const treatmentStart = timestampMillis(ticket.tratamentoIniciadoEm) || start;
-  const finalStatus = ['resolvido', 'cancelado'].includes(status);
+  const currentStatus = canonicalStatus(ticket.status, ticket.fila);
+  const requestedStatus = els.detailStatus.value || currentStatus;
+  const status = canChangeStatus(ticket) ? requestedStatus : currentStatus;
+  const text = normalize(els.responseText.value) || historyTextForStatus(status);
 
   try {
     els.saveResponseBtn.disabled = true;
     const now = serverTimestamp();
-    const patch = {
-      status,
-      atualizadoEm: now,
-      ultimaOcorrenciaTexto: text,
-      ultimaOcorrenciaTipo: 'resposta',
-      ultimaOcorrenciaUsuarioId: state.user.uid,
-      ultimaOcorrenciaUsuarioNome: selectedUserName(),
-      ultimaOcorrenciaUsuarioEmail: state.user.email,
-      ultimaOcorrenciaEm: now
-    };
-
-    if (status === 'em_tratamento' && !ticket.responsavelId) {
-      Object.assign(patch, {
-        responsavelId: state.user.uid,
-        responsavelNome: selectedUserName(),
-        responsavelEmail: state.user.email,
-        tratamentoIniciadoEm: now
-      });
-    }
-
-    if (finalStatus) {
-      Object.assign(patch, {
-        fechadoPor: state.user.uid,
-        fechadoPorNome: selectedUserName(),
-        fechadoPorEmail: state.user.email,
-        fechadoEm: now,
-        tempoAtendimentoMin: minutesBetween(treatmentStart),
-        tempoTotalMin: minutesBetween(start),
-        ...(status === 'resolvido' ? { resolvidoEm: now } : { canceladoEm: now })
-      });
-    }
-
     const ref = doc(db, 'comercial_chamados', ticket.id);
+    const patch = buildStatusPatch(ticket, status, text, now);
+
     await updateDoc(ref, patch);
-    await addDoc(collection(ref, 'historico'), {
+
+    await addHistory(ref, {
       texto: text,
-      tipo: 'resposta',
+      tipo: status !== currentStatus ? 'status' : 'resposta',
       status,
+      statusAnterior: currentStatus,
+      statusNovo: status,
       usuarioId: state.user.uid,
       usuarioNome: selectedUserName(),
-      usuarioEmail: state.user.email,
-      criadoEm: now
+      usuarioEmail: state.user.email
     });
+
     showToast('Resposta salva.', 'success');
     els.ticketDialog.close();
   } catch (error) {
@@ -734,6 +936,7 @@ function switchView(viewName) {
   els.dashboardBtn.classList.toggle('active', viewName === 'dashboard');
   els.reportsBtn.classList.toggle('active', viewName === 'reports');
   els.adminBtn.classList.toggle('active', viewName === 'admin');
+
   if (viewName === 'reports') renderReports();
   if (viewName === 'admin') {
     renderTiposAdmin();
@@ -756,6 +959,7 @@ function reportTickets() {
   const start = dateInputMillis(els.reportStart.value, false);
   const end = dateInputMillis(els.reportEnd.value, true);
   const fila = els.reportFila.value;
+
   tickets = tickets.filter((ticket) => {
     const created = timestampMillis(ticket.criadoEm) || timestampMillis(ticket.atualizadoEm);
     if (start && created < start) return false;
@@ -763,6 +967,7 @@ function reportTickets() {
     if (fila !== 'todos' && ticket.fila !== fila) return false;
     return true;
   });
+
   return tickets;
 }
 
@@ -787,19 +992,33 @@ function avg(values) {
   return clean.reduce((a, b) => a + b, 0) / clean.length;
 }
 
+function ticketCloseEndMs(ticket) {
+  return timestampMillis(ticket.fechadoEm)
+    || timestampMillis(ticket.resolvidoEm)
+    || timestampMillis(ticket.canceladoEm)
+    || timestampMillis(ticket.atualizadoEm)
+    || Date.now();
+}
+
 function renderReports() {
   if (!isAdmin()) return;
+
   const tickets = reportTickets();
   const compras = tickets.filter((t) => t.fila === 'compras');
   const cadastro = tickets.filter((t) => t.fila === 'cadastro');
+
   const byBuyer = groupCount(compras, (t) => t.compradorNome || 'Sem comprador');
   const byBuyerType = groupCount(compras, (t) => `${t.compradorNome || 'Sem comprador'} • ${t.tipoDivergenciaNome || t.tipoDivergencia || 'Tipo'}`);
   const byCadastro = groupCount(cadastro, (t) => t.tipoDivergenciaNome || t.tipoDivergencia || 'Cadastro');
   const byFornecedor = groupCount(tickets, (t) => t.fornecedorNome || t.fornecedorTexto || 'Fornecedor');
+  const byStatus = groupCount(tickets, (t) => STATUS_LABELS[canonicalStatus(t.status, t.fila)] || t.status || 'Aberto');
 
   const avgRows = state.compradores.map((buyer) => {
     const mine = compras.filter((t) => t.compradorId === buyer.id || t.compradorNome === buyer.nome);
-    const minutes = mine.map((t) => t.tempoAtendimentoMin ?? minutesBetween(timestampMillis(t.tratamentoIniciadoEm) || timestampMillis(t.criadoEm), timestampMillis(t.fechadoEm) || timestampMillis(t.resolvidoEm) || timestampMillis(t.canceladoEm) || timestampMillis(t.atualizadoEm) || Date.now()));
+    const minutes = mine.map((t) => t.tempoAtendimentoMin ?? minutesBetween(
+      timestampMillis(t.tratamentoIniciadoEm) || timestampMillis(t.criadoEm),
+      ticketCloseEndMs(t)
+    ));
     return { nome: buyer.nome, total: mine.length, media: avg(minutes) };
   }).filter((row) => row.total > 0).sort((a, b) => (b.total - a.total));
 
@@ -808,6 +1027,7 @@ function renderReports() {
     ${chartCard('Comprador x tipo de divergência', byBuyerType)}
     ${chartCard('Divergências de Cadastro por tipo', byCadastro)}
     ${chartCard('Fornecedores com mais divergências', byFornecedor)}
+    ${chartCard('Status dos chamados', byStatus)}
     <article class="card report-card wide">
       <h3>Tempo médio de atendimento por comprador</h3>
       <div class="table-wrap">
@@ -821,13 +1041,18 @@ function renderReports() {
 }
 
 async function saveDivergenciasConfig() {
-  await setDoc(doc(db, 'config', 'divergencias'), { filas: state.divergencias, atualizadoEm: serverTimestamp(), atualizadoPor: state.user.uid }, { merge: true });
+  await setDoc(doc(db, 'config', 'divergencias'), {
+    filas: state.divergencias,
+    atualizadoEm: serverTimestamp(),
+    atualizadoPor: state.user.uid
+  }, { merge: true });
 }
 
 function renderTiposAdmin() {
   if (!els.tiposList) return;
   const fila = els.adminTipoFila.value || 'compras';
   const tipos = state.divergencias?.[fila]?.tipos || [];
+
   els.tiposList.innerHTML = tipos.map((tipo) => `
     <div class="mini-item">
       <strong>${escapeHtml(tipo.nome)}</strong>
@@ -841,9 +1066,13 @@ async function addTipo() {
   const fila = els.adminTipoFila.value;
   const nome = normalize(els.adminTipoNome.value);
   if (!nome) return showToast('Digite o tipo da divergência.', 'error');
+
   const id = safeId(nome);
   const tipos = state.divergencias[fila].tipos;
-  if (tipos.some((t) => t.id === id || normalizeAscii(t.nome) === normalizeAscii(nome))) return showToast('Esse tipo já existe nesta fila.', 'error');
+  if (tipos.some((t) => t.id === id || normalizeAscii(t.nome) === normalizeAscii(nome))) {
+    return showToast('Esse tipo já existe nesta fila.', 'error');
+  }
+
   tipos.push({ id, nome });
   await saveDivergenciasConfig();
   els.adminTipoNome.value = '';
@@ -856,8 +1085,10 @@ async function deleteTipo(tipoId) {
   const fila = els.adminTipoFila.value;
   const tipos = state.divergencias[fila].tipos;
   if (tipos.length <= 1) return showToast('A fila precisa ter pelo menos um tipo.', 'error');
+
   const tipo = tipos.find((t) => t.id === tipoId);
   if (!tipo || !confirm(`Excluir "${tipo.nome}"?`)) return;
+
   state.divergencias[fila].tipos = tipos.filter((t) => t.id !== tipoId);
   await saveDivergenciasConfig();
   renderTiposAdmin();
@@ -866,6 +1097,7 @@ async function deleteTipo(tipoId) {
 
 function renderBuyersAdmin() {
   if (!els.buyersList) return;
+
   els.buyersList.innerHTML = state.compradores.map((buyer) => `
     <div class="mini-item">
       <strong>${escapeHtml(buyer.nome)}</strong>
@@ -878,9 +1110,24 @@ async function addBuyer() {
   if (!isAdmin()) return;
   const nome = normalize(els.buyerNameInput.value);
   if (!nome) return showToast('Digite o nome do comprador.', 'error');
-  if (state.compradores.some((b) => normalizeAscii(b.nome) === normalizeAscii(nome))) return showToast('Já existe comprador com esse nome.', 'error');
+
+  if (state.compradores.some((b) => normalizeAscii(b.nome) === normalizeAscii(nome))) {
+    return showToast('Já existe comprador com esse nome.', 'error');
+  }
+
   const id = `${safeId(nome)}_${Date.now().toString(36)}`;
-  await setDoc(doc(db, 'compradores', id), { nome, ativo: true, criadoEm: serverTimestamp(), criadoPor: state.user.uid });
+  await setDoc(doc(db, 'compradores', id), {
+    nome,
+    nomeBusca: normalizeAscii(nome),
+    ativo: true,
+    criadoEm: serverTimestamp(),
+    criadoPor: state.user.uid,
+    criadoPorEmail: state.user.email,
+    atualizadoEm: serverTimestamp(),
+    atualizadoPor: state.user.uid,
+    atualizadoPorEmail: state.user.email
+  });
+
   els.buyerNameInput.value = '';
   await loadCompradores();
   showToast('Comprador criado.', 'success');
@@ -888,11 +1135,24 @@ async function addBuyer() {
 
 async function deleteBuyer(id) {
   if (!isAdmin()) return;
+
   const buyer = state.compradores.find((b) => b.id === id);
   if (!buyer || !confirm(`Excluir comprador "${buyer.nome}"?`)) return;
-  await updateDoc(doc(db, 'compradores', id), { ativo: false, atualizadoEm: serverTimestamp(), atualizadoPor: state.user.uid });
+
+  await updateDoc(doc(db, 'compradores', id), {
+    ativo: false,
+    atualizadoEm: serverTimestamp(),
+    atualizadoPor: state.user.uid,
+    atualizadoPorEmail: state.user.email
+  });
+
   await loadCompradores();
   showToast('Comprador excluído.', 'success');
+}
+
+function filasForUser(user) {
+  if (Array.isArray(user.filasTratamento)) return user.filasTratamento;
+  return [];
 }
 
 function renderUsersAdmin() {
@@ -902,28 +1162,46 @@ function renderUsersAdmin() {
     return;
   }
 
-  els.usersList.innerHTML = state.users.map((user) => `
-    <div class="user-item" data-user-id="${escapeHtml(user.id)}">
-      <div class="user-main"><strong>${escapeHtml(user.nome || user.email || 'Usuário')}</strong><small>${escapeHtml(user.email || '')}</small></div>
-      <select data-user-field="papel">
-        ${['usuario', 'compras', 'cadastro', 'admin'].map((role) => `<option value="${role}" ${user.papel === role ? 'selected' : ''}>${roleLabel(role)}</option>`).join('')}
-      </select>
-      <label class="check-row"><input type="checkbox" data-user-field="ativo" ${user.ativo !== false ? 'checked' : ''}> Ativo</label>
-      <label class="check-row"><input type="checkbox" data-user-field="compras" ${Array.isArray(user.filasTratamento) && user.filasTratamento.includes('compras') ? 'checked' : ''}> Compras</label>
-      <label class="check-row"><input type="checkbox" data-user-field="cadastro" ${Array.isArray(user.filasTratamento) && user.filasTratamento.includes('cadastro') ? 'checked' : ''}> Cadastro</label>
-    </div>
-  `).join('') || '<p class="muted">Nenhum usuário encontrado.</p>';
+  els.usersList.innerHTML = state.users.map((user) => {
+    const filas = filasForUser(user);
+    return `
+      <div class="user-item" data-user-id="${escapeHtml(user.id)}">
+        <div class="user-main"><strong>${escapeHtml(user.nome || user.email || 'Usuário')}</strong><small>${escapeHtml(user.email || '')}</small></div>
+        <select data-user-field="papel">
+          ${['usuario', 'compras', 'cadastro', 'admin'].map((role) => `<option value="${role}" ${user.papel === role ? 'selected' : ''}>${roleLabel(role)}</option>`).join('')}
+        </select>
+        <label class="check-row"><input type="checkbox" data-user-field="ativo" ${user.ativo !== false ? 'checked' : ''}> Ativo</label>
+        <label class="check-row"><input type="checkbox" data-user-field="compras" ${filas.includes('compras') ? 'checked' : ''}> Compras</label>
+        <label class="check-row"><input type="checkbox" data-user-field="cadastro" ${filas.includes('cadastro') ? 'checked' : ''}> Cadastro</label>
+      </div>
+    `;
+  }).join('') || '<p class="muted">Nenhum usuário encontrado.</p>';
 }
 
 async function updateUserFromRow(row) {
   if (!isAdmin() || !row) return;
+
   const userId = row.dataset.userId;
   const papel = row.querySelector('[data-user-field="papel"]')?.value || 'usuario';
   const ativo = row.querySelector('[data-user-field="ativo"]')?.checked ?? true;
   const filasTratamento = [];
+
   if (row.querySelector('[data-user-field="compras"]')?.checked) filasTratamento.push('compras');
   if (row.querySelector('[data-user-field="cadastro"]')?.checked) filasTratamento.push('cadastro');
-  await updateDoc(doc(db, 'usuarios', userId), { papel, ativo, filasTratamento, podeAbrir: ['usuario', 'crf', 'admin'].includes(papel), atualizadoEm: serverTimestamp(), atualizadoPor: state.user.uid });
+
+  if (papel === 'compras' && !filasTratamento.includes('compras')) filasTratamento.push('compras');
+  if (papel === 'cadastro' && !filasTratamento.includes('cadastro')) filasTratamento.push('cadastro');
+
+  await updateDoc(doc(db, 'usuarios', userId), {
+    papel,
+    ativo,
+    filasTratamento,
+    podeAbrir: ['usuario', 'crf', 'admin'].includes(papel),
+    atualizadoEm: serverTimestamp(),
+    atualizadoPor: state.user.uid,
+    atualizadoPorEmail: state.user.email
+  });
+
   showToast('Usuário atualizado.', 'success');
   await loadUsersAdmin();
 }
@@ -937,14 +1215,17 @@ function bootAppUI() {
 
 async function afterLogin() {
   await loadProfile();
+
   if (!state.profile) {
     showOnly(els.authView);
     return;
   }
+
   if (state.profile.ativo === false) {
     showOnly(els.blockedView);
     return;
   }
+
   bootAppUI();
   await Promise.all([loadDivergencias(), loadCompradores(), loadUsersAdmin()]);
   startTicketStreams();
@@ -954,10 +1235,12 @@ onAuthStateChanged(auth, async (user) => {
   state.user = user || null;
   state.profile = null;
   stopTicketStreams();
+
   if (!user) {
     showOnly(els.authView);
     return;
   }
+
   await afterLogin();
 });
 
@@ -973,9 +1256,12 @@ els.reportsBtn.addEventListener('click', () => switchView('reports'));
 els.adminBtn.addEventListener('click', () => switchView('admin'));
 els.refreshBtn.addEventListener('click', () => renderAll());
 els.generateReportsBtn.addEventListener('click', renderReports);
+
 ['input', 'change'].forEach((eventName) => {
-  [els.searchInput, els.filaFilter, els.statusFilter, els.compradorFilter, els.dateStart, els.dateEnd].forEach((el) => el.addEventListener(eventName, renderAll));
+  [els.searchInput, els.filaFilter, els.statusFilter, els.compradorFilter, els.dateStart, els.dateEnd]
+    .forEach((el) => el.addEventListener(eventName, renderAll));
 });
+
 [els.reportStart, els.reportEnd, els.reportFila].forEach((el) => el.addEventListener('change', renderReports));
 
 document.addEventListener('click', async (event) => {
@@ -1005,6 +1291,7 @@ els.reserveFromModalBtn.addEventListener('click', async () => {
   if (state.selectedTicket) await reserveTicket(state.selectedTicket);
   els.ticketDialog.close();
 });
+
 els.saveResponseBtn.addEventListener('click', saveResponse);
 els.adminTipoFila.addEventListener('change', renderTiposAdmin);
 els.addTipoBtn.addEventListener('click', addTipo);

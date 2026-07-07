@@ -75,10 +75,10 @@ button { cursor: pointer; }
 .app { width: min(1580px, 100%); margin: 0 auto; padding: 18px; }
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 16px; margin-bottom: 14px; position: sticky; top: 0; z-index: 5; backdrop-filter: blur(10px); }
 .top-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
-.summary-grid { display: grid; grid-template-columns: repeat(5, minmax(120px, 1fr)); gap: 12px; margin-bottom: 12px; }
-.metric { padding: 14px; }
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.metric { padding: 10px 12px; min-height: 76px; }
 .metric span { color: var(--muted); font-size: .78rem; font-weight: 900; }
-.metric strong { display: block; font-size: 2rem; margin-top: 4px; }
+.metric strong { display: block; font-size: 1.45rem; margin-top: 3px; }
 .filters { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; padding: 14px; margin-bottom: 12px; }
 .table-card { padding: 0; overflow: hidden; }
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px; }
@@ -91,9 +91,11 @@ button { cursor: pointer; }
 .tickets-table tr:hover td { background: #fff7fb; }
 .status { display: inline-flex; align-items: center; white-space: nowrap; border-radius: 999px; padding: 5px 9px; font-size: .72rem; font-weight: 900; }
 .status.aberto { background: #eff6ff; color: #1d4ed8; }
+.status.reaberto { background: #fef3c7; color: #92400e; }
 .status.em_tratamento { background: #fff7ed; color: var(--warning); }
-.status.resolvido { background: #ecfdf3; color: var(--success); }
-.status.cancelado { background: #fef3f2; color: var(--danger); }
+.status.informacoes_divergentes { background: #fef3f2; color: var(--danger); }
+.status.pedido_corrigido, .status.pronto, .status.resolvido { background: #ecfdf3; color: var(--success); }
+.status.devolver_recusar, .status.cancelado { background: #fee4e2; color: var(--danger); }
 .kicker { color: var(--muted); font-size: .76rem; display: block; margin-top: 3px; }
 .strong-line { font-weight: 900; overflow-wrap: anywhere; }
 .actions-cell { display: flex; gap: 7px; flex-wrap: wrap; }
@@ -158,3 +160,14 @@ button { cursor: pointer; }
   .detail-facts { grid-template-columns: 1fr; }
   .row-form, .row-form.two { grid-template-columns: 1fr; }
 }
+
+
+/* Comercial v1.1 - ajustes de compactação */
+.topbar.card { padding: 12px 14px; }
+.section-head { padding: 13px 16px; }
+.filters { padding: 12px; gap: 10px; }
+.tickets-table th, .tickets-table td { padding: 8px 10px; }
+.field textarea { min-height: 104px; }
+.detail-facts { padding: 12px; gap: 8px; }
+.fact { padding: 8px 9px; }
+.history-list { max-height: 480px; }

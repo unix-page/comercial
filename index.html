@@ -4,9 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Comercial • Divergências NF</title>
-  <link rel="icon" type="image/png" href="./comercial.png?v=1" />
-  <link rel="shortcut icon" type="image/png" href="./comercial.png?v=1" />
-  <link rel="apple-touch-icon" href="./comercial.png?v=1" />
+  <link rel="icon" type="image/png" href="./comercial.png?v=2" />
+  <link rel="shortcut icon" type="image/png" href="./comercial.png?v=2" />
+  <link rel="apple-touch-icon" href="./comercial.png?v=2" />
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
@@ -87,9 +87,12 @@
     <section id="dashboardView">
       <section class="summary-grid">
         <article class="metric card"><span>Abertos</span><strong id="countAberto">0</strong></article>
+        <article class="metric card"><span>Reabertos</span><strong id="countReaberto">0</strong></article>
         <article class="metric card"><span>Em tratamento</span><strong id="countTratamento">0</strong></article>
-        <article class="metric card"><span>Resolvidos</span><strong id="countResolvido">0</strong></article>
-        <article class="metric card"><span>Cancelados</span><strong id="countCancelado">0</strong></article>
+        <article class="metric card"><span>Informação divergente</span><strong id="countInfoDivergente">0</strong></article>
+        <article class="metric card"><span>Pedido corrigido</span><strong id="countPedidoCorrigido">0</strong></article>
+        <article class="metric card"><span>Pronto</span><strong id="countPronto">0</strong></article>
+        <article class="metric card"><span>Devolver e recusar</span><strong id="countDevolverRecusar">0</strong></article>
         <article class="metric card"><span>Total visível</span><strong id="countTotal">0</strong></article>
       </section>
 
@@ -112,9 +115,12 @@
             <option value="ativos">Ativos</option>
             <option value="todos">Todos</option>
             <option value="aberto">Aberto</option>
+            <option value="reaberto">Reaberto</option>
             <option value="em_tratamento">Em tratamento</option>
-            <option value="resolvido">Resolvido</option>
-            <option value="cancelado">Cancelado</option>
+            <option value="informacoes_divergentes">Informação divergente</option>
+            <option value="pedido_corrigido">Pedido corrigido</option>
+            <option value="pronto">Pronto</option>
+            <option value="devolver_recusar">Devolver e recusar</option>
           </select>
         </label>
         <label class="field compact">
@@ -237,12 +243,7 @@
           <h3>Responder chamado</h3>
           <label class="field">
             <span>Status</span>
-            <select id="detailStatus">
-              <option value="aberto">Aberto</option>
-              <option value="em_tratamento">Em tratamento</option>
-              <option value="resolvido">Resolvido</option>
-              <option value="cancelado">Cancelado</option>
-            </select>
+            <select id="detailStatus"></select>
           </label>
           <label class="field">
             <span>Resposta</span>
