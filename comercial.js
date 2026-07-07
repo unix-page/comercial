@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Comercial • Infradesk → Divergências NF
 // @namespace    comercial/infradesk
-// @version      1.0.0
+// @version      1.0.1
 // @description  Comercial Infradesk: abre divergências comerciais/cadastro no Firebase, com login Google/e-mail e loader page-context.
 // @author       Comercial
 // @match        https://*.infradesk.app/backend/chamados/painel*
@@ -29,7 +29,7 @@
   /********************************************************************
    * CONFIGURAÇÕES
    ********************************************************************/
-  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.0-loader-ready';
+  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.1-loader-ready';
   const COMERCIAL_ICON_URL = 'https://unix-page.github.io/comercial/comercial.png';
   const COMERCIAL_UPDATE_URL = 'https://unix-page.github.io/comercial/comercial.js';
 
@@ -56,9 +56,7 @@
     appId: '1:602637992147:web:fc930856cc72f598a31426'
   };
 
-  const CATEGORIAS_FORNECEDOR = ['Bebidas', 'FLV', 'Magazine', 'Mercearia', 'Perecíveis', 'PHL'];
-
-  const DEFAULT_DIVERGENCIAS = {
+    const DEFAULT_DIVERGENCIAS = {
     compras: {
       nome: 'Compras',
       tipos: [
@@ -95,6 +93,8 @@
     divergenciasConfig: null,
     divergenciasConfigExists: false,
     divergenciasLoading: null,
+    compradoresConfig: null,
+    compradoresLoading: null,
     isSaving: false,
     scanTimer: null
   };
@@ -126,6 +126,7 @@
       state.profile = null;
       state.activeFornecedor = null;
       state.activeFornecedorRef = null;
+      state.compradoresConfig = null;
     }
 
     renderAuthInfo();
@@ -220,8 +221,9 @@
   }
 
   function canonicalCategoria(value) {
-    const norm = normalizeAscii(value);
-    return CATEGORIAS_FORNECEDOR.find((item) => normalizeAscii(item) === norm) || normalizeText(value || '');
+    // Categoria/tipo da nota vem direto do card do Infradesk.
+    // Não transformamos em lista fixa, porque é o tipo real que controla o SLA.
+    return normalizeText(value || '');
   }
 
   function parseNfeKey(chave) {
@@ -310,6 +312,9 @@
   }
 
   function fornecedorDocId(data) {
+    // O vínculo de comprador é por CNPJ da NF, não só pelo cadastro interno do fornecedor.
+    // Assim um mesmo fornecedor pode ter compradores diferentes conforme o CNPJ da nota.
+    if (data?.cnpj) return `cnpj_${safeDocPart(data.cnpj)}`;
     if (data?.fornecedorId) return `fornecedor_${safeDocPart(data.fornecedorId)}`;
     return `fornecedor_${hashText(data?.fornecedorNome || data?.fornecedorTexto || 'sem-fornecedor')}`;
   }
@@ -559,8 +564,69 @@
   }
 
   /********************************************************************
-   * FORNECEDORES E COMPRADORES
+   * COMPRADORES E VÍNCULO POR CNPJ
    ********************************************************************/
+  async function loadCompradoresConfig(force = false) {
+    if (!force && Array.isArray(state.compradoresConfig)) return state.compradoresConfig;
+    if (state.compradoresLoading) return state.compradoresLoading;
+
+    state.compradoresLoading = (async () => {
+      try {
+        if (!state.user || !state.profile) {
+          state.compradoresConfig = [];
+          return state.compradoresConfig;
+        }
+
+        const snap = await db.collection('compradores').get();
+        state.compradoresConfig = snap.docs
+          .map((doc) => ({ id: doc.id, ...doc.data() }))
+          .filter((item) => item && item.ativo !== false && normalizeText(item.nome))
+          .sort((a, b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome), 'pt-BR'));
+
+        return state.compradoresConfig;
+      } catch (error) {
+        console.warn('[Comercial] Não consegui carregar lista de compradores:', error);
+        state.compradoresConfig = [];
+        return state.compradoresConfig;
+      } finally {
+        state.compradoresLoading = null;
+      }
+    })();
+
+    return state.compradoresLoading;
+  }
+
+  function allCompradores() {
+    return (state.compradoresConfig || [])
+      .filter((item) => item && item.ativo !== false && normalizeText(item.nome));
+  }
+
+  function compradorById(id) {
+    return allCompradores().find((item) => String(item.id) === String(id)) || null;
+  }
+
+  function activeLinkedCompradorIds() {
+    const fornecedor = state.activeFornecedor || {};
+    const ids = [];
+
+    if (Array.isArray(fornecedor.compradorIds)) {
+      fornecedor.compradorIds.forEach((id) => {
+        const clean = normalizeText(id);
+        if (clean && !ids.includes(clean)) ids.push(clean);
+      });
+    }
+
+    // Compatibilidade com a primeira versão, que gravava compradores dentro do fornecedor.
+    if (Array.isArray(fornecedor.compradores)) {
+      fornecedor.compradores.forEach((item) => {
+        const clean = normalizeText(item?.id || '');
+        if (clean && item?.ativo !== false && !ids.includes(clean)) ids.push(clean);
+      });
+    }
+
+    return ids;
+  }
+
   async function loadFornecedorCompradores(data) {
     state.activeFornecedor = null;
     state.activeFornecedorRef = null;
@@ -576,61 +642,137 @@
         ? { id: snap.id, ...snap.data() }
         : {
           id: docId,
+          cnpj: data.cnpj || '',
           fornecedorId: data.fornecedorId || '',
           fornecedorNome: data.fornecedorNome || '',
-          categoriaFornecedor: data.categoriaFornecedor || '',
-          compradores: []
+          fornecedorTexto: data.fornecedorTexto || '',
+          tipoNota: data.categoriaFornecedor || '',
+          compradorIds: []
         };
 
-      if (!Array.isArray(state.activeFornecedor.compradores)) state.activeFornecedor.compradores = [];
+      if (!Array.isArray(state.activeFornecedor.compradorIds)) state.activeFornecedor.compradorIds = [];
     } catch (error) {
-      console.warn('[Comercial] Não consegui carregar compradores do fornecedor:', error);
+      console.warn('[Comercial] Não consegui carregar vínculo de compradores do CNPJ:', error);
       state.activeFornecedor = {
         id: docId,
+        cnpj: data.cnpj || '',
         fornecedorId: data.fornecedorId || '',
         fornecedorNome: data.fornecedorNome || '',
-        categoriaFornecedor: data.categoriaFornecedor || '',
-        compradores: []
+        fornecedorTexto: data.fornecedorTexto || '',
+        tipoNota: data.categoriaFornecedor || '',
+        compradorIds: []
       };
     }
 
     renderCompradorSelect();
   }
 
-  function activeCompradores() {
-    return (state.activeFornecedor?.compradores || []).filter((item) => item && item.ativo !== false && normalizeText(item.nome));
-  }
-
   function renderCompradorSelect() {
     const select = $('#comercial-comprador');
     const hint = $('#comercial-comprador-hint');
+    const deleteBtn = $('#comercial-delete-buyer');
     if (!select) return;
 
-    const compradores = activeCompradores();
+    const todos = allCompradores();
+    const linkedIds = activeLinkedCompradorIds();
+    const linked = linkedIds.map(compradorById).filter(Boolean);
+    const usingLinkedList = linked.length > 0;
+    const options = usingLinkedList ? linked : todos;
+
     select.innerHTML = '';
 
     const empty = document.createElement('option');
     empty.value = '';
-    empty.textContent = compradores.length ? 'Selecione o comprador' : 'Nenhum comprador cadastrado';
+    if (usingLinkedList) empty.textContent = options.length > 1 ? 'Selecione o comprador vinculado' : 'Comprador vinculado ao CNPJ';
+    else empty.textContent = todos.length ? 'Selecione comprador para vincular ao CNPJ' : 'Nenhum comprador cadastrado';
     select.appendChild(empty);
 
-    compradores.forEach((comprador) => {
+    options.forEach((comprador) => {
       const opt = document.createElement('option');
-      opt.value = comprador.id || safeDocPart(comprador.nome);
+      opt.value = comprador.id;
       opt.textContent = comprador.nome;
       opt.dataset.nome = comprador.nome;
+      opt.dataset.linked = linkedIds.includes(comprador.id) ? '1' : '0';
       select.appendChild(opt);
     });
 
-    if (compradores.length === 1) {
-      select.value = compradores[0].id || safeDocPart(compradores[0].nome);
-      if (hint) hint.textContent = '1 comprador cadastrado: já deixei selecionado.';
-    } else if (compradores.length > 1) {
-      select.value = '';
-      if (hint) hint.textContent = 'Mais de 1 comprador cadastrado: escolha quem vai tratar.';
+    if (options.length === 1) {
+      select.value = options[0].id;
     } else {
-      if (hint) hint.textContent = 'Cadastre o comprador desse fornecedor pelo botão +.';
+      select.value = '';
     }
+
+    if (hint) {
+      if (usingLinkedList && options.length === 1) {
+        hint.textContent = '1 comprador vinculado ao CNPJ: já deixei selecionado.';
+      } else if (usingLinkedList && options.length > 1) {
+        hint.textContent = 'Mais de 1 comprador vinculado ao CNPJ: escolha quem vai tratar.';
+      } else if (!todos.length) {
+        hint.textContent = 'Cadastre um comprador no botão + e ele já será vinculado ao CNPJ.';
+      } else if (todos.length === 1) {
+        hint.textContent = '1 comprador cadastrado no sistema; ao salvar/vincular ele será ligado ao CNPJ.';
+      } else {
+        hint.textContent = 'Nenhum comprador vinculado ainda; selecione um comprador e clique em Vincular.';
+      }
+    }
+
+    if (deleteBtn) deleteBtn.style.display = isAdmin() ? '' : 'none';
+  }
+
+  async function persistFornecedorBuyerLink(compradorId, silent = false) {
+    const data = state.activeData;
+    if (!data) {
+      if (!silent) showToast('Nenhum card ativo.', 'error');
+      return false;
+    }
+
+    const comprador = compradorById(compradorId);
+    if (!comprador) {
+      if (!silent) showToast('Comprador inválido ou não cadastrado.', 'error');
+      return false;
+    }
+
+    if (!state.activeFornecedorRef) {
+      state.activeFornecedorRef = db.collection('fornecedores').doc(fornecedorDocId(data));
+    }
+
+    const linkedIds = activeLinkedCompradorIds();
+    const nextIds = linkedIds.includes(comprador.id) ? linkedIds : [...linkedIds, comprador.id];
+
+    const payload = {
+      cnpj: data.cnpj || '',
+      fornecedorId: data.fornecedorId || '',
+      fornecedorNome: data.fornecedorNome || '',
+      fornecedorTexto: data.fornecedorTexto || '',
+      tipoNota: data.categoriaFornecedor || '',
+      compradorIds: nextIds,
+      atualizadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+      atualizadoPor: state.user.uid,
+      atualizadoPorEmail: state.user.email
+    };
+
+    try {
+      await state.activeFornecedorRef.set(payload, { merge: true });
+      state.activeFornecedor = { ...(state.activeFornecedor || {}), ...payload, compradorIds: nextIds };
+      renderCompradorSelect();
+      const select = $('#comercial-comprador');
+      if (select) select.value = comprador.id;
+      if (!silent) showToast('Comprador vinculado ao CNPJ.', 'success');
+      return true;
+    } catch (error) {
+      console.error('[Comercial] Erro ao vincular comprador ao CNPJ:', error);
+      if (!silent) showToast(error?.code === 'permission-denied' ? 'Permissão negada para vincular comprador. Atualize as regras.' : (error.message || 'Erro ao vincular comprador.'), 'error');
+      return false;
+    }
+  }
+
+  async function linkSelectedBuyerToActiveSupplier() {
+    if (!state.user || !state.profile) return showToast('Entre no Comercial antes de vincular comprador.', 'error');
+
+    const compradorId = $('#comercial-comprador')?.value || '';
+    if (!compradorId) return showToast('Selecione um comprador para vincular ao CNPJ.', 'error');
+
+    await persistFornecedorBuyerLink(compradorId, false);
   }
 
   async function addBuyerForActiveSupplier() {
@@ -642,56 +784,80 @@
       return;
     }
 
-    const nome = normalizeText(prompt(`Nome do comprador para ${data.fornecedorNome}:`) || '');
+    const nome = normalizeText(prompt('Nome do novo comprador:') || '');
     if (!nome) return;
 
-    const current = state.activeFornecedor || {
-      id: fornecedorDocId(data),
-      fornecedoresId: data.fornecedorId || '',
-      fornecedorNome: data.fornecedorNome || '',
-      compradores: []
-    };
-
-    const compradores = Array.isArray(current.compradores) ? [...current.compradores] : [];
-    const exists = compradores.some((item) => normalizeAscii(item?.nome) === normalizeAscii(nome) && item?.ativo !== false);
-
-    if (exists) {
-      showToast('Esse comprador já está cadastrado para este fornecedor.', 'error');
-      return;
-    }
-
-    const comprador = {
-      id: `${safeDocPart(nome)}_${hashText(nome).slice(0, 6)}`,
-      nome,
-      ativo: true,
-      criadoEmMs: Date.now(),
-      criadoPor: state.user.uid,
-      criadoPorEmail: state.user.email
-    };
-
-    compradores.push(comprador);
-
-    const payload = {
-      fornecedorId: data.fornecedorId || '',
-      fornecedorNome: data.fornecedorNome || '',
-      fornecedorTexto: data.fornecedorTexto || '',
-      categoriaFornecedor: $('#comercial-categoria')?.value || data.categoriaFornecedor || '',
-      compradores,
-      atualizadoEm: firebase.firestore.FieldValue.serverTimestamp(),
-      atualizadoPor: state.user.uid,
-      atualizadoPorEmail: state.user.email
-    };
+    let compradorId = `${safeDocPart(nome)}_${hashText(nome).slice(0, 6)}`;
+    const existing = allCompradores().find((item) => normalizeAscii(item.nome) === normalizeAscii(nome));
 
     try {
-      await state.activeFornecedorRef.set(payload, { merge: true });
-      state.activeFornecedor = { ...(state.activeFornecedor || {}), ...payload, compradores };
+      if (existing) {
+        compradorId = existing.id;
+      } else {
+        await db.collection('compradores').doc(compradorId).set({
+          nome,
+          nomeBusca: normalizeAscii(nome),
+          ativo: true,
+          criadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+          criadoPor: state.user.uid,
+          criadoPorEmail: state.user.email,
+          atualizadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+          atualizadoPor: state.user.uid,
+          atualizadoPorEmail: state.user.email
+        }, { merge: false });
+
+        await loadCompradoresConfig(true);
+      }
+
+      await persistFornecedorBuyerLink(compradorId, true);
       renderCompradorSelect();
       const select = $('#comercial-comprador');
-      if (select) select.value = comprador.id;
-      showToast('Comprador cadastrado para este fornecedor.', 'success');
+      if (select) select.value = compradorId;
+      showToast(existing ? 'Comprador já existia e foi vinculado ao CNPJ.' : 'Comprador criado e vinculado ao CNPJ.', 'success');
     } catch (error) {
       console.error('[Comercial] Erro ao cadastrar comprador:', error);
-      showToast(error?.code === 'permission-denied' ? 'Permissão negada para gravar fornecedores. Atualize as regras.' : (error.message || 'Erro ao cadastrar comprador.'), 'error');
+      showToast(error?.code === 'permission-denied' ? 'Permissão negada para cadastrar comprador. Atualize as regras.' : (error.message || 'Erro ao cadastrar comprador.'), 'error');
+    }
+  }
+
+  async function deleteSelectedBuyer() {
+    if (!isAdmin()) return showToast('Somente admin pode excluir comprador da lista.', 'error');
+
+    const compradorId = $('#comercial-comprador')?.value || '';
+    if (!compradorId) return showToast('Selecione um comprador para excluir.', 'error');
+
+    const comprador = compradorById(compradorId);
+    const nome = comprador?.nome || compradorId;
+    if (!confirm(`Excluir o comprador "${nome}" da lista geral?`)) return;
+
+    try {
+      await db.collection('compradores').doc(compradorId).update({
+        ativo: false,
+        excluidoEm: firebase.firestore.FieldValue.serverTimestamp(),
+        excluidoPor: state.user.uid,
+        excluidoPorEmail: state.user.email,
+        atualizadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+        atualizadoPor: state.user.uid,
+        atualizadoPorEmail: state.user.email
+      });
+
+      if (state.activeFornecedorRef) {
+        const nextIds = activeLinkedCompradorIds().filter((id) => id !== compradorId);
+        await state.activeFornecedorRef.set({
+          compradorIds: nextIds,
+          atualizadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+          atualizadoPor: state.user.uid,
+          atualizadoPorEmail: state.user.email
+        }, { merge: true });
+        state.activeFornecedor = { ...(state.activeFornecedor || {}), compradorIds: nextIds };
+      }
+
+      await loadCompradoresConfig(true);
+      renderCompradorSelect();
+      showToast('Comprador excluído da lista.', 'success');
+    } catch (error) {
+      console.error('[Comercial] Erro ao excluir comprador:', error);
+      showToast(error?.code === 'permission-denied' ? 'Permissão negada. Somente admin pode excluir comprador.' : (error.message || 'Erro ao excluir comprador.'), 'error');
     }
   }
 
@@ -718,42 +884,42 @@
       .comercial-box small{color:#64748b;display:block;margin-top:5px}
       .comercial-overlay{position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:999999;display:none;align-items:center;justify-content:center;padding:20px}
       .comercial-overlay.open{display:flex}
-      .comercial-modal{width:min(760px,calc(100vw - 32px));max-height:calc(100vh - 36px);background:#fff;border-radius:18px;box-shadow:0 24px 60px rgba(0,0,0,.22);overflow:auto;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-      .comercial-modal-head{display:flex;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid #e5e7eb;position:sticky;top:0;background:#fff;z-index:2}
-      .comercial-modal-head img{width:42px;height:42px;border-radius:12px}
-      .comercial-modal-head h3{margin:0;font-size:18px;color:#172033}
+      .comercial-modal{width:min(640px,calc(100vw - 32px));max-height:calc(100vh - 36px);background:#fff;border-radius:18px;box-shadow:0 24px 60px rgba(0,0,0,.22);overflow:auto;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+      .comercial-modal-head{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #e5e7eb;position:sticky;top:0;background:#fff;z-index:2}
+      .comercial-modal-head img{width:34px;height:34px;border-radius:10px}
+      .comercial-modal-head h3{margin:0;font-size:16px;color:#172033}
       .comercial-modal-head p{margin:2px 0 0;color:#687386;font-size:12px}
       .comercial-close{margin-left:auto;border:0;border-radius:10px;background:#f1f5f9;width:34px;height:34px;font-size:18px;line-height:1;cursor:pointer}
-      .comercial-modal-body{padding:18px;display:grid;gap:12px}
-      .comercial-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-      .comercial-grid-3{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end}
-      .comercial-info{border:1px solid #fbcfe8;background:#fdf2f8;color:#831843;padding:10px 12px;border-radius:12px;font-size:12px;line-height:1.45}
-      .comercial-field{display:grid;gap:6px}
-      .comercial-field label{font-weight:800;color:#687386;font-size:12px}
-      .comercial-field select,.comercial-field input,.comercial-field textarea{width:100%;border:1px solid #dfe7f0;border-radius:12px;padding:10px 12px;outline:none;color:#172033;background:#fff}
-      .comercial-field textarea{min-height:82px;resize:vertical}
+      .comercial-modal-body{padding:12px;display:grid;gap:8px}
+      .comercial-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+      .comercial-grid-3{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end}
+      .comercial-info{border:1px solid #fbcfe8;background:#fdf2f8;color:#831843;padding:8px 10px;border-radius:10px;font-size:11px;line-height:1.35}
+      .comercial-field{display:grid;gap:4px}
+      .comercial-field label{font-weight:800;color:#687386;font-size:11px}
+      .comercial-field select,.comercial-field input,.comercial-field textarea{width:100%;border:1px solid #dfe7f0;border-radius:10px;padding:7px 9px;outline:none;color:#172033;background:#fff;font-size:12px}
+      .comercial-field textarea{min-height:56px;resize:vertical}
       .comercial-field select:focus,.comercial-field input:focus,.comercial-field textarea:focus{border-color:#db2777;box-shadow:0 0 0 3px rgba(219,39,119,.12)}
       .comercial-field small{font-size:11px;color:#64748b}
-      .comercial-actions{display:flex;gap:8px;justify-content:flex-end;padding:0 18px 18px;position:sticky;bottom:0;background:#fff;border-top:1px solid #eef2f7}
-      .comercial-btn{border:0;border-radius:12px;padding:10px 14px;font-weight:800;min-height:40px;cursor:pointer}
+      .comercial-actions{display:flex;gap:8px;justify-content:flex-end;padding:8px 12px 12px;position:sticky;bottom:0;background:#fff;border-top:1px solid #eef2f7}
+      .comercial-btn{border:0;border-radius:10px;padding:8px 12px;font-weight:800;min-height:34px;cursor:pointer;font-size:12px}
       .comercial-btn.primary{background:#db2777;color:#fff}
       .comercial-btn.ghost{background:#f8fafc;border:1px solid #dfe7f0;color:#172033}
       .comercial-btn.warn{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412}
       .comercial-btn.small{min-height:34px;padding:8px 10px;font-size:12px}
-      .comercial-btn.round{width:42px;padding:0;font-size:20px}
+      .comercial-btn.round{width:34px;padding:0;font-size:18px}
       .comercial-btn:disabled{opacity:.6;cursor:not-allowed}
-      .comercial-authbar{padding:10px 12px;border-radius:12px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;font-size:12px}
+      .comercial-authbar{padding:8px 10px;border-radius:10px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;font-size:11px}
       .comercial-authbar.ok{background:#ecfdf3;color:#067647;border-color:#bbf7d0}
-      .comercial-login-panel{display:none;border:1px solid #fbcfe8;background:#fdf2f8;border-radius:12px;padding:10px 12px;gap:8px}
+      .comercial-login-panel{display:none;border:1px solid #fbcfe8;background:#fdf2f8;border-radius:10px;padding:8px 10px;gap:8px}
       .comercial-login-panel.open{display:grid}
       .comercial-login-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
       .comercial-login-actions,.comercial-config-actions{display:flex;gap:8px;flex-wrap:wrap}
-      .comercial-config-actions{padding:10px 12px;border:1px dashed #f9a8d4;background:#fff7fb;border-radius:12px}
+      .comercial-config-actions{padding:8px 10px;border:1px dashed #f9a8d4;background:#fff7fb;border-radius:10px}
       .comercial-toast{position:fixed;top:18px;right:18px;z-index:1000000;background:#111827;color:#fff;padding:12px 14px;border-radius:12px;box-shadow:0 18px 45px rgba(15,23,42,.18);max-width:min(420px,calc(100vw - 36px));display:none}
       .comercial-toast.open{display:block}
       .comercial-toast.success{background:#067647}
       .comercial-toast.error{background:#b42318}
-      @media(max-width:760px){.comercial-grid,.comercial-grid-3,.comercial-login-grid{grid-template-columns:1fr}.comercial-actions{flex-wrap:wrap}}
+      .comercial-buyer-actions{display:flex;gap:6px;align-items:end;flex-wrap:wrap}.comercial-buyer-actions .comercial-btn{white-space:nowrap}@media(max-width:760px){.comercial-grid,.comercial-grid-3,.comercial-login-grid{grid-template-columns:1fr}.comercial-actions{flex-wrap:wrap}}
     `;
     document.head.appendChild(style);
   }
@@ -824,31 +990,27 @@
             </div>
 
             <div class="comercial-field">
-              <label for="comercial-categoria">Categoria / SLA</label>
-              <select id="comercial-categoria"></select>
+              <label for="comercial-categoria">Tipo real da nota</label>
+              <input id="comercial-categoria" type="text" readonly>
             </div>
           </div>
 
           <div id="comercial-comprador-wrap" class="comercial-grid-3">
             <div class="comercial-field">
-              <label for="comercial-comprador">Comprador do fornecedor</label>
+              <label for="comercial-comprador">Comprador</label>
               <select id="comercial-comprador"></select>
               <small id="comercial-comprador-hint"></small>
             </div>
-            <div class="comercial-field">
-              <label>&nbsp;</label>
-              <input id="comercial-comprador-readonly" type="text" readonly style="display:none">
+            <div class="comercial-buyer-actions">
+              <button id="comercial-link-buyer" class="comercial-btn ghost small" type="button" title="Vincular comprador selecionado ao CNPJ">Vincular</button>
+              <button id="comercial-add-buyer" class="comercial-btn primary round" type="button" title="Criar comprador e vincular ao CNPJ">+</button>
+              <button id="comercial-delete-buyer" class="comercial-btn ghost small" type="button" title="Excluir comprador da lista geral">Excluir</button>
             </div>
-            <button id="comercial-add-buyer" class="comercial-btn primary round" type="button" title="Cadastrar comprador para este fornecedor">+</button>
           </div>
 
           <div class="comercial-field">
             <label for="comercial-comment">Observação</label>
             <textarea id="comercial-comment" placeholder="Ex.: Nota chegou sem pedido, item não cadastrado, divergência de valor..."></textarea>
-          </div>
-
-          <div class="comercial-info" style="background:#f8fafc;color:#475569;border-color:#e2e8f0;">
-            Compras exige comprador. Cadastro não exige comprador. O sistema grava chamado, chave, NF, CNPJ, fornecedor, categoria, comprador e histórico.
           </div>
         </div>
 
@@ -876,6 +1038,8 @@
       renderBuyerRequirement();
     });
     $('#comercial-add-buyer').addEventListener('click', addBuyerForActiveSupplier);
+    $('#comercial-link-buyer').addEventListener('click', linkSelectedBuyerToActiveSupplier);
+    $('#comercial-delete-buyer').addEventListener('click', deleteSelectedBuyer);
     $('#comercial-create-default-list').addEventListener('click', createDefaultConfig);
     $('#comercial-add-type').addEventListener('click', addDivergenceType);
     $('#comercial-delete-type').addEventListener('click', deleteSelectedDivergenceType);
@@ -1005,22 +1169,9 @@
   }
 
   function renderCategoriaOptions(value) {
-    const select = $('#comercial-categoria');
-    if (!select) return;
-
-    const current = canonicalCategoria(value);
-    const list = [...CATEGORIAS_FORNECEDOR];
-    if (current && !list.some((item) => normalizeAscii(item) === normalizeAscii(current))) list.push(current);
-
-    select.innerHTML = '';
-    list.forEach((categoria) => {
-      const opt = document.createElement('option');
-      opt.value = categoria;
-      opt.textContent = categoria;
-      select.appendChild(opt);
-    });
-
-    if (current) select.value = list.find((item) => normalizeAscii(item) === normalizeAscii(current)) || current;
+    const input = $('#comercial-categoria');
+    if (!input) return;
+    input.value = canonicalCategoria(value) || '—';
   }
 
   function renderBuyerRequirement() {
@@ -1193,6 +1344,7 @@
     renderAuthInfo();
 
     await loadDivergenciasConfig(false);
+    await loadCompradoresConfig(false);
     renderFilaOptions();
     renderDivergenciaOptions();
     renderConfigControls();
@@ -1214,7 +1366,7 @@
       <div><strong>Chave:</strong> ${escapeHtml(data.chave)}</div>
       <div><strong>NF:</strong> ${escapeHtml(data.numeroNf || '—')} • <strong>CNPJ:</strong> ${escapeHtml(data.cnpj || '—')}</div>
       <div><strong>Empresa:</strong> ${escapeHtml(data.empresa || '—')}</div>
-      <div><strong>Fornecedor:</strong> ${escapeHtml(data.fornecedorTexto || data.fornecedorNome || '—')} • <strong>Categoria:</strong> ${escapeHtml(data.categoriaFornecedor || '—')}</div>
+      <div><strong>Fornecedor:</strong> ${escapeHtml(data.fornecedorTexto || data.fornecedorNome || '—')} • <strong>Tipo da nota:</strong> ${escapeHtml(data.categoriaFornecedor || '—')}</div>
     `;
   }
 
@@ -1277,6 +1429,7 @@
 
         if (state.activeData) {
           await loadDivergenciasConfig(true);
+          await loadCompradoresConfig(true);
           renderFilaOptions();
           renderDivergenciaOptions();
           await loadFornecedorCompradores(state.activeData);
@@ -1386,6 +1539,7 @@
       state.profileLoading = null;
       state.activeFornecedor = null;
       state.activeFornecedorRef = null;
+      state.compradoresConfig = null;
 
       renderAuthInfo();
       scanCards();
@@ -1469,6 +1623,11 @@
     }
 
     const categoriaFornecedor = $('#comercial-categoria')?.value || data.categoriaFornecedor || '';
+
+    if (divergence.fila === 'compras' && comprador.compradorId && !activeLinkedCompradorIds().includes(comprador.compradorId)) {
+      await persistFornecedorBuyerLink(comprador.compradorId, true);
+    }
+
     const comment = normalizeText($('#comercial-comment')?.value || '') || `Divergência aberta: ${divergence.tipoDivergenciaNome}.`;
     const saveBtn = $('#comercial-save');
     const originalText = saveBtn?.textContent || 'Salvar Comercial';
@@ -1499,6 +1658,7 @@
         fornecedorNome: data.fornecedorNome || '',
         fornecedorTexto: data.fornecedorTexto || '',
         categoriaFornecedor,
+        tipoNota: categoriaFornecedor,
         fila: divergence.fila,
         filaNome: divergence.filaNome,
         tipoDivergencia: divergence.tipoDivergencia,
@@ -1553,7 +1713,7 @@
           fornecedorId: data.fornecedorId || '',
           fornecedorNome: data.fornecedorNome || '',
           fornecedorTexto: data.fornecedorTexto || '',
-          categoriaFornecedor,
+          tipoNota: categoriaFornecedor,
           atualizadoEm: now,
           atualizadoPor: state.user.uid,
           atualizadoPorEmail: state.user.email
