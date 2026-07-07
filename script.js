@@ -35,7 +35,7 @@ const firebaseConfig = {
   appId: '1:602637992147:web:fc930856cc72f598a31426'
 };
 
-const APP_VERSION = 'Comercial Site v1.1.3';
+const APP_VERSION = 'Comercial Site v1.1.5 econômico por período';
 const BOOTSTRAP_ADMIN_EMAIL = 'crfenxuto01@gmail.com';
 
 const STATUS_LABELS = {
@@ -224,6 +224,39 @@ function dateInputMillis(value, endOfDay = false) {
   const suffix = endOfDay ? 'T23:59:59' : 'T00:00:00';
   const ms = new Date(`${value}${suffix}`).getTime();
   return Number.isFinite(ms) ? ms : 0;
+}
+
+function todayInputValue() {
+  const now = new Date();
+  const local = new Date(now.getTime() - (now.getTimezoneOffset() * 60000));
+  return local.toISOString().slice(0, 10);
+}
+
+function ensureDefaultPeriodFilters() {
+  const today = todayInputValue();
+
+  if (els.dateStart && !els.dateStart.value) els.dateStart.value = today;
+  if (els.dateEnd && !els.dateEnd.value) els.dateEnd.value = today;
+
+  if (els.reportStart && !els.reportStart.value) els.reportStart.value = today;
+  if (els.reportEnd && !els.reportEnd.value) els.reportEnd.value = today;
+
+  if (els.statusFilter && !els.statusFilter.value) els.statusFilter.value = 'periodo_mais_ativos';
+}
+
+function currentPeriodRange() {
+  const today = todayInputValue();
+  const startValue = els.dateStart?.value || today;
+  const endValue = els.dateEnd?.value || startValue || today;
+
+  return {
+    startValue,
+    endValue,
+    startDate: new Date(`${startValue}T00:00:00`),
+    endDate: new Date(`${endValue}T23:59:59`),
+    startMs: dateInputMillis(startValue, false),
+    endMs: dateInputMillis(endValue, true)
+  };
 }
 
 function formatDate(value) {
@@ -545,44 +578,169 @@ function rebuildTicketsFromSnapshots(snapshotMaps) {
   renderAll();
 }
 
-function startTicketStreams() {
-  stopTicketStreams();
-  const snapshotMaps = [];
-  const queries = [];
-
-  // Firestore rules não funcionam como filtro automático.
-  // Toda consulta precisa provar para as regras que só está lendo chamados do Comercial.
+function baseTicketScopes() {
   const comercialOnly = where('tipoChamado', '==', 'nf_divergencia_comercial');
+  const selectedFila = els.filaFilter?.value || 'todos';
 
   if (isAdmin()) {
-    queries.push(query(collection(db, 'comercial_chamados'), comercialOnly, limit(1600)));
-  } else if (Array.isArray(state.profile?.filasTratamento) && state.profile.filasTratamento.length) {
-    state.profile.filasTratamento.forEach((fila) => {
-      queries.push(query(collection(db, 'comercial_chamados'), comercialOnly, where('fila', '==', fila), limit(700)));
-    });
-  } else {
-    queries.push(query(collection(db, 'comercial_chamados'), comercialOnly, where('abertoPor', '==', state.user.uid), limit(700)));
+    const base = [comercialOnly];
+    if (selectedFila !== 'todos') base.push(where('fila', '==', selectedFila));
+    return [base];
   }
 
-  queries.forEach((q, index) => {
-    snapshotMaps[index] = new Map();
-    const unsub = onSnapshot(q, (snapshot) => {
-      const local = new Map();
-      snapshot.forEach((docSnap) => local.set(docSnap.id, { id: docSnap.id, ...docSnap.data() }));
-      snapshotMaps[index] = local;
-      rebuildTicketsFromSnapshots(snapshotMaps);
-      const visibleCount = filteredTickets().length;
-      els.liveStatus.textContent = `${visibleCount} visível(eis) de ${state.tickets.length} carregado(s) • ${APP_VERSION}`;
-    }, (error) => {
-      console.error(error);
-      const permission = error?.code === 'permission-denied';
-      els.liveStatus.textContent = permission
-        ? 'Permissão negada ao carregar chamados. Atualize o script/site e confira as rules.'
-        : 'Erro ao carregar chamados. Confira regras/permissões.';
-      showToast(permission ? 'Permissão negada ao carregar chamados. Consulta ajustada para rules v1.0.6+.' : 'Erro ao carregar chamados do Comercial.', 'error');
-    });
-    state.unsubTickets.push(unsub);
+  if (Array.isArray(state.profile?.filasTratamento) && state.profile.filasTratamento.length) {
+    const filas = selectedFila !== 'todos'
+      ? state.profile.filasTratamento.filter((fila) => fila === selectedFila)
+      : state.profile.filasTratamento;
+
+    return filas.map((fila) => [comercialOnly, where('fila', '==', fila)]);
+  }
+
+  return [[comercialOnly, where('abertoPor', '==', state.user.uid)]];
+}
+
+function ticketQueryFromConstraints(constraints, max = 350) {
+  return query(collection(db, 'comercial_chamados'), ...constraints, limit(max));
+}
+
+function pushUniqueQuery(list, constraints, max = 350) {
+  const key = constraints.map((item) => String(item?._field?.canonicalString?.() || item?._queryPath || item)).join('|') + `|${max}`;
+  list.push({ constraints, max, key });
+}
+
+function buildTicketQueriesForCurrentFilters() {
+  ensureDefaultPeriodFilters();
+
+  const queries = [];
+  const status = els.statusFilter?.value || 'periodo_mais_ativos';
+  const period = currentPeriodRange();
+  const scopes = baseTicketScopes();
+
+  scopes.forEach((scope) => {
+    const scopedStatus = (statusValue) => [...scope, where('status', '==', statusValue)];
+
+    if (status === 'periodo_mais_ativos') {
+      // Padrão pedido:
+      // - chamados criados no período selecionado, por padrão hoje;
+      // - + chamados ativos de outras datas.
+      pushUniqueQuery(queries, [...scope, where('criadoEm', '>=', period.startDate), where('criadoEm', '<=', period.endDate)], 350);
+      pushUniqueQuery(queries, scopedStatus('aberto'), 350);
+      pushUniqueQuery(queries, scopedStatus('reaberto'), 350);
+
+      // Em tratamento:
+      // - Admin vê todos ativos.
+      // - Compras/Cadastro veem só as próprias reservas no padrão.
+      // - Se quiser todos em tratamento da fila, escolha Status = Em tratamento.
+      if (isAdmin()) {
+        pushUniqueQuery(queries, scopedStatus('em_tratamento'), 350);
+      } else if (Array.isArray(state.profile?.filasTratamento) && state.profile.filasTratamento.length) {
+        pushUniqueQuery(queries, [...scopedStatus('em_tratamento'), where('operadorTratamentoId', '==', state.user.uid)], 250);
+      } else {
+        pushUniqueQuery(queries, scopedStatus('em_tratamento'), 250);
+      }
+
+      return;
+    }
+
+    if (status === 'ativos') {
+      pushUniqueQuery(queries, scopedStatus('aberto'), 350);
+      pushUniqueQuery(queries, scopedStatus('reaberto'), 350);
+
+      if (isAdmin() || !Array.isArray(state.profile?.filasTratamento) || !state.profile.filasTratamento.length) {
+        pushUniqueQuery(queries, scopedStatus('em_tratamento'), 350);
+      } else {
+        pushUniqueQuery(queries, [...scopedStatus('em_tratamento'), where('operadorTratamentoId', '==', state.user.uid)], 250);
+      }
+
+      return;
+    }
+
+    if (status === 'todos') {
+      // "Todos" precisa respeitar período para não carregar histórico inteiro.
+      pushUniqueQuery(queries, [...scope, where('criadoEm', '>=', period.startDate), where('criadoEm', '<=', period.endDate)], 500);
+      return;
+    }
+
+    if (status === 'em_tratamento') {
+      // Quando escolher Em tratamento explicitamente, mostra todos da fila/perfil.
+      pushUniqueQuery(queries, scopedStatus('em_tratamento'), 500);
+      return;
+    }
+
+    if (ACTIVE_STATUSES.includes(status)) {
+      pushUniqueQuery(queries, scopedStatus(status), 500);
+      return;
+    }
+
+    // Status final: sempre limitado ao período selecionado.
+    pushUniqueQuery(queries, [...scopedStatus(status), where('criadoEm', '>=', period.startDate), where('criadoEm', '<=', period.endDate)], 500);
   });
+
+  return queries;
+}
+
+async function startTicketStreams() {
+  // Mantém o nome da função para não mexer no restante da tela,
+  // mas agora é carregamento econômico sob demanda, sem listener geral.
+  await loadTicketsOnce();
+}
+
+async function loadTicketsOnce() {
+  stopTicketStreams();
+
+  if (!state.user || !state.profile) return;
+
+  try {
+    ensureDefaultPeriodFilters();
+
+    if (els.liveStatus) {
+      const period = currentPeriodRange();
+      els.liveStatus.textContent = `Carregando período ${period.startValue} até ${period.endValue} • ${APP_VERSION}`;
+    }
+
+    const queryDefs = buildTicketQueriesForCurrentFilters();
+    const map = new Map();
+    let readBatches = 0;
+
+    for (const item of queryDefs) {
+      const snap = await getDocs(ticketQueryFromConstraints(item.constraints, item.max));
+      readBatches += 1;
+      snap.forEach((docSnap) => map.set(docSnap.id, { id: docSnap.id, ...docSnap.data() }));
+    }
+
+    state.tickets = sortTickets([...map.values()].map((ticket) => ({
+      ...ticket,
+      status: canonicalStatus(ticket.status, ticket.fila)
+    })));
+
+    renderAll();
+
+    const visibleCount = filteredTickets().length;
+    if (els.liveStatus) {
+      els.liveStatus.textContent = `${visibleCount} visível(eis) de ${state.tickets.length} lido(s) • ${readBatches} consulta(s) • ${APP_VERSION}`;
+    }
+  } catch (error) {
+    console.error(error);
+    const needsIndex = error?.code === 'failed-precondition';
+    const permission = error?.code === 'permission-denied';
+
+    if (els.liveStatus) {
+      els.liveStatus.textContent = needsIndex
+        ? 'Consulta precisa de índice no Firestore. Veja o console para o link do índice.'
+        : permission
+          ? 'Permissão negada ao carregar chamados. Confira rules/perfil.'
+          : 'Erro ao carregar chamados. Confira regras/permissões.';
+    }
+
+    showToast(
+      needsIndex
+        ? 'O Firestore pediu um índice para esta consulta. Abra o console do navegador e clique no link do índice.'
+        : permission
+          ? 'Permissão negada ao carregar chamados.'
+          : 'Erro ao carregar chamados do Comercial.',
+      'error'
+    );
+  }
 }
 
 async function loadCompradores() {
@@ -654,24 +812,33 @@ async function loadUsersAdmin() {
 function filteredTickets(base = state.tickets) {
   const search = normalizeAscii(els.searchInput.value);
   const fila = els.filaFilter.value;
-  const status = els.statusFilter.value;
+  const status = els.statusFilter.value || 'periodo_mais_ativos';
   const compradorId = els.compradorFilter.value;
-  const start = dateInputMillis(els.dateStart.value, false);
-  const end = dateInputMillis(els.dateEnd.value, true);
+  const period = currentPeriodRange();
 
   return sortTickets(base.filter((ticket) => {
     const ticketStatus = canonicalStatus(ticket.status, ticket.fila);
+    const created = ticketInitialOrderMillis(ticket);
+    const inPeriod = (!period.startMs || created >= period.startMs) && (!period.endMs || created <= period.endMs);
+    const isActive = ACTIVE_STATUSES.includes(ticketStatus);
 
     if (!shouldShowTicketForCurrentUser(ticket, status)) return false;
     if (search && !ticketSearchText(ticket).includes(search)) return false;
     if (fila !== 'todos' && ticket.fila !== fila) return false;
-    if (status === 'ativos' && !ACTIVE_STATUSES.includes(ticketStatus)) return false;
-    if (status !== 'todos' && status !== 'ativos' && ticketStatus !== status) return false;
+
+    if (status === 'periodo_mais_ativos') {
+      if (!inPeriod && !isActive) return false;
+    } else if (status === 'ativos') {
+      if (!isActive) return false;
+    } else if (status !== 'todos' && ticketStatus !== status) {
+      return false;
+    } else if (status === 'todos') {
+      if (!inPeriod) return false;
+    }
+
+    if (FINAL_STATUSES.includes(status) && !inPeriod) return false;
     if (compradorId !== 'todos' && ticket.compradorId !== compradorId) return false;
 
-    const created = ticketInitialOrderMillis(ticket);
-    if (start && created < start) return false;
-    if (end && created > end) return false;
     return true;
   }));
 }
@@ -796,6 +963,7 @@ async function reserveTicket(ticket) {
     });
 
     showToast('Chamado reservado.', 'success');
+    await loadTicketsOnce();
   } catch (error) {
     console.error(error);
     showToast(error.message || 'Erro ao reservar chamado.', 'error');
@@ -967,6 +1135,7 @@ async function saveResponse() {
 
     showToast('Resposta salva.', 'success');
     els.ticketDialog.close();
+    await loadTicketsOnce();
   } catch (error) {
     console.error(error);
     showToast(error.message || 'Erro ao salvar resposta.', 'error');
@@ -988,8 +1157,12 @@ function switchView(viewName) {
   els.reportsBtn.classList.toggle('active', viewName === 'reports');
   els.adminBtn.classList.toggle('active', viewName === 'admin');
 
-  if (viewName === 'reports') renderReports();
+  if (viewName === 'reports') {
+    ensureDefaultPeriodFilters();
+    renderReports();
+  }
   if (viewName === 'admin') {
+    ensureDefaultPeriodFilters();
     renderTiposAdmin();
     renderBuyersAdmin();
     loadUsersAdmin();
@@ -1278,8 +1451,9 @@ async function afterLogin() {
   }
 
   bootAppUI();
+  ensureDefaultPeriodFilters();
   await Promise.all([loadDivergencias(), loadCompradores(), loadUsersAdmin()]);
-  startTicketStreams();
+  await startTicketStreams();
 }
 
 onAuthStateChanged(auth, async (user) => {
@@ -1305,13 +1479,16 @@ els.logoutBlockedBtn.addEventListener('click', () => signOut(auth));
 els.dashboardBtn.addEventListener('click', () => switchView('dashboard'));
 els.reportsBtn.addEventListener('click', () => switchView('reports'));
 els.adminBtn.addEventListener('click', () => switchView('admin'));
-els.refreshBtn.addEventListener('click', () => renderAll());
-els.generateReportsBtn.addEventListener('click', renderReports);
+els.refreshBtn.addEventListener('click', () => loadTicketsOnce());
+els.generateReportsBtn.addEventListener('click', () => { ensureDefaultPeriodFilters(); renderReports(); });
 
-['input', 'change'].forEach((eventName) => {
-  [els.searchInput, els.filaFilter, els.statusFilter, els.compradorFilter, els.dateStart, els.dateEnd]
-    .forEach((el) => el.addEventListener(eventName, renderAll));
-});
+els.searchInput.addEventListener('input', renderAll);
+els.compradorFilter.addEventListener('change', renderAll);
+
+// Estes filtros mudam o conjunto que precisa ser lido do Firestore.
+// Por isso recarregam sob demanda, em vez de usar listener geral.
+[els.filaFilter, els.statusFilter, els.dateStart, els.dateEnd]
+  .forEach((el) => el.addEventListener('change', () => loadTicketsOnce()));
 
 [els.reportStart, els.reportEnd, els.reportFila].forEach((el) => el.addEventListener('change', renderReports));
 
