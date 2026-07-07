@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Comercial • Infradesk → Divergências NF
 // @namespace    comercial/infradesk
-// @version      1.0.9
+// @version      1.0.10
 // @description  Comercial Infradesk: abre divergências comerciais/cadastro no Firebase, com login Google/e-mail e loader page-context.
 // @author       Comercial
 // @match        https://*.infradesk.app/backend/chamados/painel*
@@ -29,7 +29,7 @@
   /********************************************************************
    * CONFIGURAÇÕES
    ********************************************************************/
-  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.9-xabuia-sync';
+  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.10-clean-cache';
   const COMERCIAL_ICON_URL = 'https://unix-page.github.io/comercial/comercial.png';
   const COMERCIAL_UPDATE_URL = 'https://unix-page.github.io/comercial/comercial.js';
 
@@ -44,8 +44,11 @@
   const COMERCIAL_PROFILE_CACHE_PREFIX = 'comercial_profile_v1_';
   const COMERCIAL_PROFILE_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
 
-  const COMERCIAL_CACHE_KEY = 'comercial_chamados_cache_v2_economico';
-  const COMERCIAL_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+  const COMERCIAL_CACHE_KEY = 'comercial_chamados_cache_v3_clean';
+  const COMERCIAL_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 4;
+  const COMERCIAL_FINAL_CACHE_TTL_MS = 1000 * 60 * 60 * 24; // finalizado fica só 24h em cache local
+  const COMERCIAL_CACHE_MAX_KEYS = 300;
+  const COMERCIAL_CACHE_MAX_TICKETS_PER_CHAVE = 1;
   const MAX_VISIBLE_ACTIVE_MONITORS = 8;
   const MAX_VISIBLE_LOOKUPS_PER_SCAN = 0;
   const COMERCIAL_CHAVE_LOOKUP_TTL_MS = 1000 * 60 * 2;
@@ -424,41 +427,114 @@
     return clean ? `chave:${clean}` : '';
   }
 
+  function cacheExpiresAtForTicket(ticket, now = Date.now()) {
+    const ttl = isFinalComercialStatus(ticket?.status)
+      ? COMERCIAL_FINAL_CACHE_TTL_MS
+      : COMERCIAL_CACHE_TTL_MS;
+
+    return now + ttl;
+  }
+
+  function compactTicketForCache(ticket, now = Date.now()) {
+    return {
+      ...ticket,
+      atualizadoEmMs: toMillis(ticket?.atualizadoEm) || Number(ticket?.atualizadoEmMs || 0) || now,
+      ultimaOcorrenciaEmMs: toMillis(ticket?.ultimaOcorrenciaEm) || Number(ticket?.ultimaOcorrenciaEmMs || 0) || toMillis(ticket?.atualizadoEm) || now,
+      cachedAt: now,
+      expiresAt: cacheExpiresAtForTicket(ticket, now)
+    };
+  }
+
+  function pruneComercialCache(cache = readCache(), now = Date.now()) {
+    const entries = Object.entries(cache || {})
+      .map(([itemKey, entry]) => {
+        const tickets = Array.isArray(entry?.tickets) ? entry.tickets : [];
+        const aliveTickets = tickets
+          .filter((ticket) => {
+            const expiresAt = Number(ticket?.expiresAt || 0);
+            if (expiresAt) return expiresAt > now;
+
+            const cachedAt = Number(ticket?.cachedAt || entry?.cachedAt || 0);
+            const ttl = isFinalComercialStatus(ticket?.status)
+              ? COMERCIAL_FINAL_CACHE_TTL_MS
+              : COMERCIAL_CACHE_TTL_MS;
+
+            return cachedAt && now - cachedAt <= ttl;
+          })
+          .sort((a, b) => ticketRecencyMs(b) - ticketRecencyMs(a))
+          .slice(0, COMERCIAL_CACHE_MAX_TICKETS_PER_CHAVE);
+
+        if (!aliveTickets.length) return null;
+
+        return [
+          itemKey,
+          {
+            cachedAt: Number(entry?.cachedAt || aliveTickets[0]?.cachedAt || now),
+            tickets: aliveTickets
+          }
+        ];
+      })
+      .filter(Boolean)
+      .sort((a, b) => Number(b[1]?.cachedAt || 0) - Number(a[1]?.cachedAt || 0))
+      .slice(0, COMERCIAL_CACHE_MAX_KEYS);
+
+    return Object.fromEntries(entries);
+  }
+
   function rememberTicket(ticket) {
     const key = cacheKey(ticket?.chave);
     if (!key || !ticket?.id) return;
 
     const now = Date.now();
-    const compact = {
-      ...ticket,
-      atualizadoEmMs: toMillis(ticket.atualizadoEm) || Number(ticket.atualizadoEmMs || 0) || now,
-      ultimaOcorrenciaEmMs: toMillis(ticket.ultimaOcorrenciaEm) || Number(ticket.ultimaOcorrenciaEmMs || 0) || toMillis(ticket.atualizadoEm) || now
-    };
+    const compact = compactTicketForCache(ticket, now);
 
     rememberTicketInMaps(compact);
 
-    const cache = readCache();
-    const entry = cache[key] || { cachedAt: now, tickets: [] };
-    const tickets = Array.isArray(entry.tickets) ? entry.tickets : [];
+    const cache = pruneComercialCache(readCache(), now);
 
-    const nextTickets = [compact, ...tickets.filter((item) => item?.id !== ticket.id)].slice(0, 8);
-    cache[key] = { cachedAt: now, tickets: nextTickets };
+    // V1.0.10 clean:
+    // Mantemos apenas 1 chamado principal por chave no cache local.
+    // O Firestore continua sendo a fonte da verdade no clique/salvar.
+    cache[key] = {
+      cachedAt: now,
+      tickets: [compact]
+    };
 
-    Object.keys(cache).forEach((itemKey) => {
-      if (!cache[itemKey]?.cachedAt || now - Number(cache[itemKey].cachedAt) > COMERCIAL_CACHE_TTL_MS) delete cache[itemKey];
-    });
-
-    writeCache(cache);
+    writeCache(pruneComercialCache(cache, now));
   }
 
   function cachedTickets(chave) {
     const key = cacheKey(chave);
     if (!key) return [];
 
-    const entry = readCache()[key];
-    if (!entry || Date.now() - Number(entry.cachedAt || 0) > COMERCIAL_CACHE_TTL_MS) return [];
+    const cache = readCache();
+    const entry = cache[key];
 
-    return Array.isArray(entry.tickets) ? entry.tickets : [];
+    if (!entry) return [];
+
+    const now = Date.now();
+    const aliveTickets = (Array.isArray(entry.tickets) ? entry.tickets : [])
+      .filter((ticket) => {
+        const expiresAt = Number(ticket?.expiresAt || 0);
+        if (expiresAt) return expiresAt > now;
+
+        const cachedAt = Number(ticket?.cachedAt || entry.cachedAt || 0);
+        const ttl = isFinalComercialStatus(ticket?.status)
+          ? COMERCIAL_FINAL_CACHE_TTL_MS
+          : COMERCIAL_CACHE_TTL_MS;
+
+        return cachedAt && now - cachedAt <= ttl;
+      })
+      .sort((a, b) => ticketRecencyMs(b) - ticketRecencyMs(a))
+      .slice(0, COMERCIAL_CACHE_MAX_TICKETS_PER_CHAVE);
+
+    if (!aliveTickets.length) {
+      delete cache[key];
+      writeCache(pruneComercialCache(cache, now));
+      return [];
+    }
+
+    return aliveTickets;
   }
 
   function clearCachedTicketsForChave(chave) {
@@ -516,7 +592,7 @@
     if (!clean) return;
 
     const list = state.userTicketsByChave.get(clean) || [];
-    const next = [ticket, ...list.filter((item) => item?.id !== ticket.id)].slice(0, 12);
+    const next = [ticket, ...list.filter((item) => item?.id !== ticket.id)].slice(0, 4);
     state.userTicketsByChave.set(clean, next);
   }
 
@@ -2485,6 +2561,13 @@
   });
 
   function boot() {
+    try {
+      // V1.0.10 clean: remove caches antigos que podiam crescer muito.
+      localStorage.removeItem('comercial_chamados_cache_v1');
+      localStorage.removeItem('comercial_chamados_cache_v2_economico');
+      writeCache(pruneComercialCache(readCache()));
+    } catch (_) {}
+
     injectStyles();
     ensureModal();
     scanCards();
