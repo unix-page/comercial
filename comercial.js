@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Comercial • Infradesk → Divergências NF
 // @namespace    comercial/infradesk
-// @version      1.0.2
+// @version      1.0.3
 // @description  Comercial Infradesk: abre divergências comerciais/cadastro no Firebase, com login Google/e-mail e loader page-context.
 // @author       Comercial
 // @match        https://*.infradesk.app/backend/chamados/painel*
@@ -29,7 +29,7 @@
   /********************************************************************
    * CONFIGURAÇÕES
    ********************************************************************/
-  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.2-loader-ready';
+  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.3-loader-ready';
   const COMERCIAL_ICON_URL = 'https://unix-page.github.io/comercial/comercial.png';
   const COMERCIAL_UPDATE_URL = 'https://unix-page.github.io/comercial/comercial.js';
 
@@ -507,61 +507,132 @@
     renderDivergenciaOptions();
     renderConfigControls();
 
+    renderTypeManager();
     showToast('Lista de divergências atualizada.', 'success');
   }
 
   async function createDefaultConfig() {
     await saveDivergenciasConfig(cloneData(DEFAULT_DIVERGENCIAS));
+    renderTypeManager();
   }
 
-  async function addDivergenceType() {
+  function openTypeManager() {
+    if (!isAdmin()) return showToast('Somente admin pode gerenciar tipos de divergência.', 'error');
+    renderTypeManager();
+    $('#comercial-type-manager-overlay')?.classList.add('open');
+    setTimeout(() => $('#comercial-type-new-name')?.focus(), 80);
+  }
+
+  function closeTypeManager() {
+    $('#comercial-type-manager-overlay')?.classList.remove('open');
+  }
+
+  function currentTypeManagerFila() {
+    const raw = $('#comercial-type-manager-fila')?.value || $('#comercial-fila')?.value || 'compras';
+    return ['compras', 'cadastro'].includes(raw) ? raw : 'compras';
+  }
+
+  function renderTypeManager() {
+    const filaSelect = $('#comercial-type-manager-fila');
+    const list = $('#comercial-type-manager-list');
+    const defaultBtn = $('#comercial-create-default-list');
+    if (!filaSelect || !list) return;
+
+    const config = normalizeDivergenciasConfig(state.divergenciasConfig || DEFAULT_DIVERGENCIAS);
+    const currentMainFila = $('#comercial-fila')?.value || 'compras';
+
+    if (!filaSelect.dataset.ready) {
+      filaSelect.innerHTML = '';
+      Object.entries(config).forEach(([fila, def]) => {
+        const opt = document.createElement('option');
+        opt.value = fila;
+        opt.textContent = def.nome || fila;
+        filaSelect.appendChild(opt);
+      });
+      filaSelect.dataset.ready = '1';
+    }
+
+    if (!filaSelect.value) filaSelect.value = currentMainFila;
+    if (!config[filaSelect.value]) filaSelect.value = 'compras';
+
+    const fila = currentTypeManagerFila();
+    const tipos = config[fila]?.tipos || [];
+    list.innerHTML = '';
+
+    if (defaultBtn) defaultBtn.style.display = state.divergenciasConfigExists ? 'none' : '';
+
+    tipos.forEach((tipo) => {
+      const row = document.createElement('div');
+      row.className = 'comercial-manager-row';
+      row.innerHTML = `
+        <span class="comercial-manager-name">${escapeHtml(tipo.nome)}</span>
+        <button class="comercial-manager-delete" type="button" data-fila="${escapeHtml(fila)}" data-tipo="${escapeHtml(tipo.id)}" title="Excluir tipo">Excluir</button>
+      `;
+      list.appendChild(row);
+    });
+
+    if (!tipos.length) {
+      list.innerHTML = '<div class="comercial-manager-empty">Nenhum tipo cadastrado para esta fila.</div>';
+    }
+  }
+
+  async function addDivergenceTypeFromManager() {
     if (!isAdmin()) return showToast('Somente admin pode criar tipo de divergência.', 'error');
 
-    const filaRaw = prompt('Criar tipo em qual fila? Digite: compras ou cadastro', $('#comercial-fila')?.value || 'compras');
-    const fila = safeDocPart(filaRaw || '');
-    if (!['compras', 'cadastro'].includes(fila)) return showToast('Fila inválida. Use compras ou cadastro.', 'error');
-
-    const nome = normalizeText(prompt(`Nome do novo tipo para ${fila}:`) || '');
-    if (!nome) return;
+    const fila = currentTypeManagerFila();
+    const input = $('#comercial-type-new-name');
+    const nome = normalizeText(input?.value || '');
+    if (!nome) {
+      input?.focus();
+      return showToast('Digite o nome do novo tipo.', 'error');
+    }
 
     const config = normalizeDivergenciasConfig(state.divergenciasConfig || DEFAULT_DIVERGENCIAS);
     const id = safeDocPart(nome);
-    if (config[fila].tipos.some((item) => item.id === id)) {
-      showToast('Esse tipo já existe.', 'error');
+
+    if (config[fila].tipos.some((item) => item.id === id || normalizeAscii(item.nome) === normalizeAscii(nome))) {
+      showToast('Esse tipo já existe nesta fila.', 'error');
       return;
     }
 
     config[fila].tipos.push({ id, nome });
     await saveDivergenciasConfig(config);
 
-    const filaSelect = $('#comercial-fila');
-    if (filaSelect) filaSelect.value = fila;
+    const mainFila = $('#comercial-fila');
+    if (mainFila) mainFila.value = fila;
     renderDivergenciaOptions();
-
     const tipoSelect = $('#comercial-tipo-divergencia');
     if (tipoSelect) tipoSelect.value = id;
+
+    if (input) input.value = '';
+    const filaSelect = $('#comercial-type-manager-fila');
+    if (filaSelect) filaSelect.value = fila;
+    renderTypeManager();
   }
 
-  async function deleteSelectedDivergenceType() {
+  async function deleteDivergenceTypeFromManager(fila, tipo) {
     if (!isAdmin()) return showToast('Somente admin pode excluir tipo de divergência.', 'error');
-
-    const fila = $('#comercial-fila')?.value || 'compras';
-    const tipo = $('#comercial-tipo-divergencia')?.value || '';
-    if (!tipo) return showToast('Selecione um tipo para excluir.', 'error');
-
-    const tipoNome = $('#comercial-tipo-divergencia')?.selectedOptions?.[0]?.textContent || tipo;
-    if (!confirm(`Excluir o tipo "${tipoNome}" da fila ${fila}?`)) return;
-
     const config = normalizeDivergenciasConfig(state.divergenciasConfig || DEFAULT_DIVERGENCIAS);
-    config[fila].tipos = config[fila].tipos.filter((item) => item.id !== tipo);
+    if (!config[fila]) return;
 
-    if (!config[fila].tipos.length) {
+    const current = config[fila].tipos.find((item) => item.id === tipo);
+    if (!current) return;
+
+    if (config[fila].tipos.length <= 1) {
       showToast('A fila precisa ter pelo menos um tipo.', 'error');
       return;
     }
 
+    if (!confirm(`Excluir o tipo "${current.nome}" da fila ${config[fila].nome || fila}?`)) return;
+
+    config[fila].tipos = config[fila].tipos.filter((item) => item.id !== tipo);
     await saveDivergenciasConfig(config);
+    renderTypeManager();
   }
+
+  // Mantidos como atalhos/fallback, mas agora abrem o gerenciador bonito.
+  async function addDivergenceType() { openTypeManager(); }
+  async function deleteSelectedDivergenceType() { openTypeManager(); }
 
   /********************************************************************
    * COMPRADORES E VÍNCULO POR CNPJ
@@ -605,6 +676,11 @@
     return allCompradores().find((item) => String(item.id) === String(id)) || null;
   }
 
+  function compradorNameExistsExact(nome) {
+    const clean = normalizeText(nome).toLowerCase();
+    return allCompradores().some((item) => normalizeText(item.nome).toLowerCase() === clean);
+  }
+
   function activeLinkedCompradorIds() {
     const fornecedor = state.activeFornecedor || {};
     const ids = [];
@@ -616,7 +692,6 @@
       });
     }
 
-    // Compatibilidade com a primeira versão, que gravava compradores dentro do fornecedor.
     if (Array.isArray(fornecedor.compradores)) {
       fornecedor.compradores.forEach((item) => {
         const clean = normalizeText(item?.id || '');
@@ -665,43 +740,33 @@
     }
 
     renderCompradorSelect();
+    renderBuyerManager();
   }
 
   function renderCompradorSelect() {
     const select = $('#comercial-comprador');
-    const deleteBtn = $('#comercial-delete-buyer');
     if (!select) return;
 
-    const todos = allCompradores();
     const linkedIds = activeLinkedCompradorIds();
     const linked = linkedIds.map(compradorById).filter(Boolean);
-    const usingLinkedList = linked.length > 0;
-    const options = usingLinkedList ? linked : todos;
 
     select.innerHTML = '';
 
     const empty = document.createElement('option');
     empty.value = '';
-    empty.textContent = todos.length ? 'Selecione comprador' : 'Nenhum comprador cadastrado';
+    empty.textContent = linked.length ? 'Escolha comprador vinculado' : 'Nenhum comprador vinculado ao CNPJ';
     select.appendChild(empty);
 
-    options.forEach((comprador) => {
+    linked.forEach((comprador) => {
       const opt = document.createElement('option');
       opt.value = comprador.id;
       opt.textContent = comprador.nome;
       opt.dataset.nome = comprador.nome;
-      opt.dataset.linked = linkedIds.includes(comprador.id) ? '1' : '0';
+      opt.dataset.linked = '1';
       select.appendChild(opt);
     });
 
-    if (options.length === 1) {
-      select.value = options[0].id;
-    } else {
-      select.value = '';
-    }
-
-
-    if (deleteBtn) deleteBtn.style.display = isAdmin() ? '' : 'none';
+    select.value = linked.length === 1 ? linked[0].id : '';
   }
 
   async function persistFornecedorBuyerLink(compradorId, silent = false) {
@@ -740,6 +805,7 @@
       await state.activeFornecedorRef.set(payload, { merge: true });
       state.activeFornecedor = { ...(state.activeFornecedor || {}), ...payload, compradorIds: nextIds };
       renderCompradorSelect();
+      renderBuyerManager();
       const select = $('#comercial-comprador');
       if (select) select.value = comprador.id;
       if (!silent) showToast('Comprador vinculado ao CNPJ.', 'success');
@@ -751,36 +817,74 @@
     }
   }
 
-  async function linkSelectedBuyerToActiveSupplier() {
-    if (!state.user || !state.profile) return showToast('Entre no Comercial antes de vincular comprador.', 'error');
-
-    const compradorId = $('#comercial-comprador')?.value || '';
-    if (!compradorId) return showToast('Selecione um comprador para vincular ao CNPJ.', 'error');
-
-    await persistFornecedorBuyerLink(compradorId, false);
+  function openBuyerManager() {
+    if (!state.user || !state.profile) return showToast('Entre no Comercial antes de gerenciar compradores.', 'error');
+    renderBuyerManager();
+    $('#comercial-buyer-manager-overlay')?.classList.add('open');
+    setTimeout(() => $('#comercial-buyer-new-name')?.focus(), 80);
   }
 
-  async function addBuyerForActiveSupplier() {
-    const data = state.activeData;
-    if (!data) return showToast('Nenhum card ativo.', 'error');
+  function closeBuyerManager() {
+    $('#comercial-buyer-manager-overlay')?.classList.remove('open');
+  }
 
-    if (!state.user || !state.profile) {
-      showToast('Entre no Comercial antes de cadastrar comprador.', 'error');
+  function renderBuyerManager() {
+    const list = $('#comercial-buyer-manager-list');
+    const scope = $('#comercial-buyer-manager-scope');
+    if (!list) return;
+
+    const compradores = allCompradores();
+    const linkedIds = activeLinkedCompradorIds();
+    const hasActiveCnpj = !!state.activeData?.cnpj;
+
+    if (scope) {
+      scope.textContent = hasActiveCnpj
+        ? `CNPJ ${state.activeData.cnpj} • ${linkedIds.length} vinculado(s)`
+        : 'Lista geral de compradores';
+    }
+
+    list.innerHTML = '';
+
+    if (!compradores.length) {
+      list.innerHTML = '<div class="comercial-manager-empty">Nenhum comprador cadastrado ainda.</div>';
       return;
     }
 
-    const nome = normalizeText(prompt('Nome do novo comprador:') || '');
-    if (!nome) return;
+    compradores.forEach((comprador) => {
+      const linked = linkedIds.includes(comprador.id);
+      const row = document.createElement('div');
+      row.className = `comercial-manager-row ${linked ? 'is-linked' : ''}`;
+      row.innerHTML = `
+        <span class="comercial-manager-name">${escapeHtml(comprador.nome)}${linked ? ' <em>vinculado</em>' : ''}</span>
+        <span class="comercial-manager-row-actions">
+          <button class="comercial-manager-link" type="button" data-comprador-id="${escapeHtml(comprador.id)}" ${!hasActiveCnpj ? 'disabled' : ''}>${linked ? 'Selecionar' : 'Vincular'}</button>
+          ${isAdmin() ? `<button class="comercial-manager-delete" type="button" data-comprador-id="${escapeHtml(comprador.id)}" title="Excluir comprador">Excluir</button>` : ''}
+        </span>
+      `;
+      list.appendChild(row);
+    });
+  }
 
-    let compradorId = `${safeDocPart(nome)}_${hashText(nome).slice(0, 6)}`;
-    const existing = allCompradores().find((item) => normalizeAscii(item.nome) === normalizeAscii(nome));
+  async function addBuyerFromManager() {
+    const data = state.activeData;
+    if (!state.user || !state.profile) return showToast('Entre no Comercial antes de cadastrar comprador.', 'error');
+
+    const input = $('#comercial-buyer-new-name');
+    const nome = normalizeText(input?.value || '');
+    if (!nome) {
+      input?.focus();
+      return showToast('Digite o nome do comprador.', 'error');
+    }
+
+    if (compradorNameExistsExact(nome)) {
+      input?.focus();
+      showToast('Já existe comprador com esse nome exato.', 'error');
+      return;
+    }
+
+    const compradorId = `${safeDocPart(nome)}_${hashText(`${nome}:${Date.now()}`).slice(0, 6)}`;
 
     try {
-      if (existing) {
-        showToast('Já existe comprador com esse nome. Selecione ele na lista e clique em Vincular.', 'error');
-        return;
-      }
-
       await db.collection('compradores').doc(compradorId).set({
         nome,
         nomeBusca: normalizeAscii(nome),
@@ -793,23 +897,42 @@
         atualizadoPorEmail: state.user.email
       }, { merge: false });
 
+      if (input) input.value = '';
       await loadCompradoresConfig(true);
-      await persistFornecedorBuyerLink(compradorId, true);
+
+      if (data?.cnpj) {
+        await persistFornecedorBuyerLink(compradorId, true);
+        showToast('Comprador criado e vinculado ao CNPJ.', 'success');
+      } else {
+        showToast('Comprador criado.', 'success');
+      }
+
+      renderBuyerManager();
       renderCompradorSelect();
-      const select = $('#comercial-comprador');
-      if (select) select.value = compradorId;
-      showToast('Comprador criado e vinculado ao CNPJ.', 'success');
     } catch (error) {
       console.error('[Comercial] Erro ao cadastrar comprador:', error);
       showToast(error?.code === 'permission-denied' ? 'Permissão negada para cadastrar comprador. Atualize as regras.' : (error.message || 'Erro ao cadastrar comprador.'), 'error');
     }
   }
 
-  async function deleteSelectedBuyer() {
-    if (!isAdmin()) return showToast('Somente admin pode excluir comprador da lista.', 'error');
+  async function linkBuyerFromManager(compradorId) {
+    if (!compradorId) return;
+    if (!state.activeData?.cnpj) return showToast('Abra um card com CNPJ para vincular comprador.', 'error');
 
-    const compradorId = $('#comercial-comprador')?.value || '';
-    if (!compradorId) return showToast('Selecione um comprador para excluir.', 'error');
+    const linked = activeLinkedCompradorIds().includes(compradorId);
+    if (!linked) {
+      const ok = await persistFornecedorBuyerLink(compradorId, false);
+      if (!ok) return;
+    }
+
+    const select = $('#comercial-comprador');
+    if (select) select.value = compradorId;
+    renderBuyerManager();
+  }
+
+  async function deleteBuyerFromManager(compradorId) {
+    if (!isAdmin()) return showToast('Somente admin pode excluir comprador da lista.', 'error');
+    if (!compradorId) return;
 
     const comprador = compradorById(compradorId);
     const nome = comprador?.nome || compradorId;
@@ -839,12 +962,18 @@
 
       await loadCompradoresConfig(true);
       renderCompradorSelect();
+      renderBuyerManager();
       showToast('Comprador excluído da lista.', 'success');
     } catch (error) {
       console.error('[Comercial] Erro ao excluir comprador:', error);
       showToast(error?.code === 'permission-denied' ? 'Permissão negada. Somente admin pode excluir comprador.' : (error.message || 'Erro ao excluir comprador.'), 'error');
     }
   }
+
+  // Atalhos antigos agora abrem o gerenciador visual.
+  async function linkSelectedBuyerToActiveSupplier() { openBuyerManager(); }
+  async function addBuyerForActiveSupplier() { openBuyerManager(); }
+  async function deleteSelectedBuyer() { openBuyerManager(); }
 
   /********************************************************************
    * UI E ESTILOS
@@ -889,6 +1018,14 @@
       .comercial-section-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:7px 8px;border:1px dashed #f9a8d4;background:#fff7fb;border-radius:10px}
       .comercial-section-title{font-size:11px;font-weight:900;color:#831843;text-transform:uppercase;letter-spacing:.02em}
       .comercial-action-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+      .comercial-manage-actions{display:flex;gap:6px;align-items:center;justify-content:flex-start;flex-wrap:wrap;padding:6px 8px;border:1px dashed #f9a8d4;background:#fff7fb;border-radius:10px}
+      .comercial-inline-select{display:grid;grid-template-columns:1fr auto;gap:6px;align-items:center}
+      .comercial-manager-overlay{position:fixed;inset:0;z-index:1000002;background:rgba(15,23,42,.60);display:none;align-items:center;justify-content:center;padding:18px}
+      .comercial-manager-overlay.open{display:flex}
+      .comercial-manager-modal{width:min(520px,calc(100vw - 32px));max-height:calc(100vh - 44px);overflow:auto;background:#fff;border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.30);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+      .comercial-manager-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border-bottom:1px solid #eef2f7;position:sticky;top:0;background:#fff;z-index:1}
+      .comercial-manager-head strong{font-size:14px;color:#172033}.comercial-manager-head small{display:block;color:#64748b;font-size:11px;margin-top:2px}
+      .comercial-manager-body{padding:10px 12px;display:grid;gap:8px}.comercial-manager-grid{display:grid;grid-template-columns:1fr auto;gap:6px;align-items:end}.comercial-manager-grid select,.comercial-manager-grid input{width:100%;border:1px solid #dfe7f0;border-radius:10px;padding:8px 9px;font-size:12px;outline:none}.comercial-manager-list{display:grid;gap:6px;max-height:280px;overflow:auto}.comercial-manager-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 8px;border:1px solid #eef2f7;background:#f8fafc;border-radius:10px}.comercial-manager-row.is-linked{background:#ecfdf3;border-color:#bbf7d0}.comercial-manager-name{font-size:12px;font-weight:800;color:#172033;min-width:0;overflow:hidden;text-overflow:ellipsis}.comercial-manager-name em{font-style:normal;margin-left:6px;color:#067647;font-size:10px}.comercial-manager-row-actions{display:flex;gap:5px;flex:0 0 auto}.comercial-manager-link,.comercial-manager-delete{border:0;border-radius:9px;padding:6px 8px;font-size:11px;font-weight:900;cursor:pointer}.comercial-manager-link{background:#db2777;color:#fff}.comercial-manager-link:disabled{opacity:.5;cursor:not-allowed}.comercial-manager-delete{background:#fff;border:1px solid #fecdd3;color:#9f1239}.comercial-manager-empty{font-size:12px;color:#64748b;padding:10px;border:1px dashed #cbd5e1;border-radius:10px;text-align:center}
       .comercial-actions{display:flex;gap:8px;justify-content:flex-end;padding:8px 12px 12px;position:sticky;bottom:0;background:#fff;border-top:1px solid #eef2f7}
       .comercial-btn{border:0;border-radius:10px;padding:8px 12px;font-weight:800;min-height:34px;cursor:pointer;font-size:12px}
       .comercial-btn.primary{background:#db2777;color:#fff}
@@ -963,27 +1100,17 @@
             </div>
           </div>
 
-          <div id="comercial-config-actions" class="comercial-section-actions" style="display:none">
-            <span class="comercial-section-title">Tipos divergências</span>
-            <span class="comercial-action-row">
-              <button id="comercial-create-default-list" class="comercial-btn warn small" type="button">Criar lista padrão</button>
-              <button id="comercial-add-type" class="comercial-btn ghost small" type="button">+ Novo tipo</button>
-              <button id="comercial-delete-type" class="comercial-btn ghost small" type="button">Excluir tipo</button>
-            </span>
+          <div id="comercial-manage-actions" class="comercial-manage-actions" style="display:none">
+            <button id="comercial-open-type-manager" class="comercial-btn ghost small" type="button">Tipos de divergência</button>
+            <button id="comercial-open-buyer-manager" class="comercial-btn ghost small" type="button">Compradores</button>
           </div>
 
           <div id="comercial-comprador-wrap" class="comercial-field">
             <label for="comercial-comprador">Comprador</label>
-            <select id="comercial-comprador"></select>
-          </div>
-
-          <div id="comercial-buyer-actions-wrap" class="comercial-section-actions">
-            <span class="comercial-section-title">Compradores</span>
-            <span class="comercial-action-row">
-              <button id="comercial-link-buyer" class="comercial-btn ghost small" type="button" title="Vincular comprador selecionado ao CNPJ">Vincular</button>
-              <button id="comercial-add-buyer" class="comercial-btn primary round" type="button" title="Criar comprador e vincular ao CNPJ">+</button>
-              <button id="comercial-delete-buyer" class="comercial-btn ghost small" type="button" title="Excluir comprador da lista geral">Excluir</button>
-            </span>
+            <div class="comercial-inline-select">
+              <select id="comercial-comprador"></select>
+              <button id="comercial-link-buyer" class="comercial-btn ghost small" type="button" title="Abrir lista de compradores para vincular ao CNPJ">Vincular</button>
+            </div>
           </div>
 
           <div class="comercial-field">
@@ -997,6 +1124,54 @@
           <button id="comercial-logout" class="comercial-btn ghost" type="button">Sair</button>
           <button id="comercial-cancel" class="comercial-btn ghost" type="button">Cancelar</button>
           <button id="comercial-save" class="comercial-btn primary" type="button">Salvar Comercial</button>
+        </div>
+      </div>
+
+      <div id="comercial-type-manager-overlay" class="comercial-manager-overlay" aria-hidden="true">
+        <div class="comercial-manager-modal" role="dialog" aria-modal="true">
+          <div class="comercial-manager-head">
+            <div><strong>Tipos de divergência</strong><small>Escolha Compras/Cadastro, crie ou exclua tipos.</small></div>
+            <button id="comercial-type-manager-close" class="comercial-close" type="button">×</button>
+          </div>
+          <div class="comercial-manager-body">
+            <div class="comercial-grid">
+              <div class="comercial-field">
+                <label for="comercial-type-manager-fila">Fila</label>
+                <select id="comercial-type-manager-fila"></select>
+              </div>
+              <div class="comercial-field">
+                <label>&nbsp;</label>
+                <button id="comercial-create-default-list" class="comercial-btn warn small" type="button">Criar lista padrão</button>
+              </div>
+            </div>
+            <div class="comercial-manager-grid">
+              <div class="comercial-field">
+                <label for="comercial-type-new-name">Novo tipo</label>
+                <input id="comercial-type-new-name" type="text" placeholder="Ex.: Pedido divergente">
+              </div>
+              <button id="comercial-add-type" class="comercial-btn primary small" type="button">+</button>
+            </div>
+            <div id="comercial-type-manager-list" class="comercial-manager-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="comercial-buyer-manager-overlay" class="comercial-manager-overlay" aria-hidden="true">
+        <div class="comercial-manager-modal" role="dialog" aria-modal="true">
+          <div class="comercial-manager-head">
+            <div><strong>Compradores</strong><small id="comercial-buyer-manager-scope">Lista geral de compradores</small></div>
+            <button id="comercial-buyer-manager-close" class="comercial-close" type="button">×</button>
+          </div>
+          <div class="comercial-manager-body">
+            <div class="comercial-manager-grid">
+              <div class="comercial-field">
+                <label for="comercial-buyer-new-name">Novo comprador</label>
+                <input id="comercial-buyer-new-name" type="text" placeholder="Nome do comprador">
+              </div>
+              <button id="comercial-add-buyer" class="comercial-btn primary small" type="button">+</button>
+            </div>
+            <div id="comercial-buyer-manager-list" class="comercial-manager-list"></div>
+          </div>
         </div>
       </div>
     `;
@@ -1015,15 +1190,38 @@
       renderDivergenciaOptions();
       renderBuyerRequirement();
     });
-    $('#comercial-add-buyer').addEventListener('click', addBuyerForActiveSupplier);
-    $('#comercial-link-buyer').addEventListener('click', linkSelectedBuyerToActiveSupplier);
-    $('#comercial-delete-buyer').addEventListener('click', deleteSelectedBuyer);
+    $('#comercial-open-type-manager').addEventListener('click', openTypeManager);
+    $('#comercial-open-buyer-manager').addEventListener('click', openBuyerManager);
+    $('#comercial-link-buyer').addEventListener('click', openBuyerManager);
+
+    $('#comercial-type-manager-close').addEventListener('click', closeTypeManager);
+    $('#comercial-type-manager-fila').addEventListener('change', renderTypeManager);
     $('#comercial-create-default-list').addEventListener('click', createDefaultConfig);
-    $('#comercial-add-type').addEventListener('click', addDivergenceType);
-    $('#comercial-delete-type').addEventListener('click', deleteSelectedDivergenceType);
+    $('#comercial-add-type').addEventListener('click', addDivergenceTypeFromManager);
+    $('#comercial-type-new-name').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') addDivergenceTypeFromManager();
+    });
+    $('#comercial-type-manager-list').addEventListener('click', (event) => {
+      const btn = event.target.closest('.comercial-manager-delete');
+      if (btn) deleteDivergenceTypeFromManager(btn.dataset.fila, btn.dataset.tipo);
+    });
+
+    $('#comercial-buyer-manager-close').addEventListener('click', closeBuyerManager);
+    $('#comercial-add-buyer').addEventListener('click', addBuyerFromManager);
+    $('#comercial-buyer-new-name').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') addBuyerFromManager();
+    });
+    $('#comercial-buyer-manager-list').addEventListener('click', (event) => {
+      const link = event.target.closest('.comercial-manager-link');
+      if (link) linkBuyerFromManager(link.dataset.compradorId);
+      const del = event.target.closest('.comercial-manager-delete');
+      if (del) deleteBuyerFromManager(del.dataset.compradorId);
+    });
 
     overlay.addEventListener('click', (event) => {
       if (event.target === overlay) closeModal();
+      if (event.target?.id === 'comercial-type-manager-overlay') closeTypeManager();
+      if (event.target?.id === 'comercial-buyer-manager-overlay') closeBuyerManager();
     });
   }
 
@@ -1097,10 +1295,17 @@
   }
 
   function renderConfigControls() {
-    const box = $('#comercial-config-actions');
+    const box = $('#comercial-manage-actions');
     if (!box) return;
 
-    box.style.display = isAdmin() ? 'flex' : 'none';
+    const logged = Boolean(state.user && state.profile && state.profile.ativo !== false);
+    box.style.display = logged ? 'flex' : 'none';
+
+    const typeBtn = $('#comercial-open-type-manager');
+    if (typeBtn) typeBtn.style.display = isAdmin() ? '' : 'none';
+
+    const buyerBtn = $('#comercial-open-buyer-manager');
+    if (buyerBtn) buyerBtn.style.display = ($('#comercial-fila')?.value || 'compras') === 'compras' ? '' : 'none';
 
     const defaultBtn = $('#comercial-create-default-list');
     if (defaultBtn) defaultBtn.style.display = state.divergenciasConfigExists ? 'none' : '';
@@ -1155,9 +1360,8 @@
   function renderBuyerRequirement() {
     const fila = $('#comercial-fila')?.value || 'compras';
     const wrap = $('#comercial-comprador-wrap');
-    const actions = $('#comercial-buyer-actions-wrap');
     if (wrap) wrap.style.display = fila === 'compras' ? 'grid' : 'none';
-    if (actions) actions.style.display = fila === 'compras' ? 'flex' : 'none';
+    renderConfigControls();
   }
 
   /********************************************************************
@@ -1591,7 +1795,7 @@
     const comprador = selectedComprador();
 
     if (divergence.fila === 'compras' && !comprador.compradorNome) {
-      showToast('Divergência de Compras exige comprador. Escolha ou cadastre pelo botão +.', 'error');
+      showToast('Divergência de Compras exige comprador. Clique em Compradores para vincular ao CNPJ.', 'error');
       $('#comercial-comprador')?.focus();
       return;
     }
