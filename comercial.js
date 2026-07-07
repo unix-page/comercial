@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Comercial • Infradesk → Divergências NF
 // @namespace    comercial/infradesk
-// @version      1.0.4
+// @version      1.0.5
 // @description  Comercial Infradesk: abre divergências comerciais/cadastro no Firebase, com login Google/e-mail e loader page-context.
 // @author       Comercial
 // @match        https://*.infradesk.app/backend/chamados/painel*
@@ -29,7 +29,7 @@
   /********************************************************************
    * CONFIGURAÇÕES
    ********************************************************************/
-  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.4-loader-ready';
+  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.5-site-sync';
   const COMERCIAL_ICON_URL = 'https://unix-page.github.io/comercial/comercial.png';
   const COMERCIAL_UPDATE_URL = 'https://unix-page.github.io/comercial/comercial.js';
 
@@ -46,6 +46,7 @@
 
   const COMERCIAL_CACHE_KEY = 'comercial_chamados_cache_v1';
   const COMERCIAL_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+  const MAX_VISIBLE_ACTIVE_MONITORS = 12;
 
   const firebaseConfig = {
     apiKey: 'AIzaSyBpWLYK1cejNpUAo5NMk8ecSSQrYMVf6-0',
@@ -76,16 +77,29 @@
 
   const STATUS_LABELS = {
     aberto: 'Aberto',
+    reaberto: 'Reaberto',
     em_tratamento: 'Em tratamento',
+    informacoes_divergentes: 'Informação divergente',
+    pedido_corrigido: 'Pedido corrigido',
+    pronto: 'Pronto',
+    devolver_recusar: 'Devolver e recusar',
+
+    // Compatibilidade com versões antigas do site.
     resolvido: 'Resolvido',
     cancelado: 'Cancelado'
   };
+
+  const ACTIVE_STATUS_VALUES = ['aberto', 'reaberto', 'em_tratamento'];
+  const FINAL_STATUS_VALUES = ['informacoes_divergentes', 'pedido_corrigido', 'pronto', 'devolver_recusar', 'resolvido', 'cancelado'];
 
   const state = {
     authReady: false,
     user: null,
     profile: null,
     profileLoading: null,
+    ticketDocUnsubs: new Map(),
+    userTicketsByChave: new Map(),
+    userTicketsById: new Map(),
     activeCard: null,
     activeData: null,
     activeFornecedor: null,
@@ -121,6 +135,9 @@
     state.user = user || null;
     state.profile = user ? readCachedProfile(user.uid) : null;
     state.profileLoading = null;
+    state.userTicketsByChave.clear();
+    state.userTicketsById.clear();
+    stopAllTicketMonitors();
 
     if (!user) {
       state.profile = null;
@@ -201,6 +218,23 @@
     return new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(date);
   }
 
+  function toMillis(value) {
+    if (!value) return 0;
+    if (typeof value.toMillis === 'function') return value.toMillis();
+    if (typeof value.toDate === 'function') return value.toDate().getTime();
+    if (value instanceof Date) return value.getTime();
+    const parsed = new Date(value).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function isActiveComercialStatus(status) {
+    return ACTIVE_STATUS_VALUES.includes(String(status || ''));
+  }
+
+  function isFinalComercialStatus(status) {
+    return FINAL_STATUS_VALUES.includes(String(status || ''));
+  }
+
   function selectedUserName() {
     return state.profile?.nome || state.user?.displayName || state.user?.email || 'Usuário';
   }
@@ -218,6 +252,44 @@
     if (!state.user || !state.profile || state.profile.ativo === false) return false;
     if (state.profile.papel === 'admin') return true;
     return Array.isArray(state.profile.filasTratamento) && state.profile.filasTratamento.includes(fila);
+  }
+
+  function statusAfterInfradeskOccurrence(existsBefore, previousStatus) {
+    const current = String(previousStatus || '');
+    if (!existsBefore) return 'aberto';
+    if (isActiveComercialStatus(current)) return current;
+    return 'reaberto';
+  }
+
+  function historyTypeForStatus(status, existsBefore, previousStatus = '') {
+    if (!existsBefore && status === 'aberto') return 'criacao';
+    if (status === 'reaberto' && previousStatus !== 'reaberto') return 'reabertura';
+    return existsBefore ? 'observacao' : 'criacao';
+  }
+
+  function ticketStatusPayload(status) {
+    const now = firebase.firestore.FieldValue.serverTimestamp();
+    const payload = { status, atualizadoEm: now };
+
+    if (status === 'reaberto') {
+      payload.reabertoPor = state.user.uid;
+      payload.reabertoPorNome = selectedUserName();
+      payload.reabertoPorEmail = state.user.email;
+      payload.reabertoEm = now;
+      payload.operadorTratamentoId = null;
+      payload.operadorTratamentoNome = null;
+      payload.operadorTratamentoEmail = null;
+      payload.tratamentoIniciadoEm = null;
+    }
+
+    if (status === 'aberto') {
+      payload.operadorTratamentoId = null;
+      payload.operadorTratamentoNome = null;
+      payload.operadorTratamentoEmail = null;
+      payload.tratamentoIniciadoEm = null;
+    }
+
+    return payload;
   }
 
   function canonicalCategoria(value) {
@@ -339,16 +411,18 @@
     const key = cacheKey(ticket?.chave);
     if (!key || !ticket?.id) return;
 
-    const cache = readCache();
     const now = Date.now();
-    const entry = cache[key] || { cachedAt: now, tickets: [] };
-    const tickets = Array.isArray(entry.tickets) ? entry.tickets : [];
-
     const compact = {
       ...ticket,
-      atualizadoEmMs: ticket.atualizadoEmMs || Date.now(),
-      ultimaOcorrenciaEmMs: ticket.ultimaOcorrenciaEmMs || Date.now()
+      atualizadoEmMs: toMillis(ticket.atualizadoEm) || Number(ticket.atualizadoEmMs || 0) || now,
+      ultimaOcorrenciaEmMs: toMillis(ticket.ultimaOcorrenciaEm) || Number(ticket.ultimaOcorrenciaEmMs || 0) || toMillis(ticket.atualizadoEm) || now
     };
+
+    rememberTicketInMaps(compact);
+
+    const cache = readCache();
+    const entry = cache[key] || { cachedAt: now, tickets: [] };
+    const tickets = Array.isArray(entry.tickets) ? entry.tickets : [];
 
     const nextTickets = [compact, ...tickets.filter((item) => item?.id !== ticket.id)].slice(0, 8);
     cache[key] = { cachedAt: now, tickets: nextTickets };
@@ -368,6 +442,120 @@
     if (!entry || Date.now() - Number(entry.cachedAt || 0) > COMERCIAL_CACHE_TTL_MS) return [];
 
     return Array.isArray(entry.tickets) ? entry.tickets : [];
+  }
+
+  function rememberTicketInMaps(ticket) {
+    if (!ticket?.id) return;
+
+    state.userTicketsById.set(ticket.id, ticket);
+
+    const clean = digitsOnly(ticket.chave || '');
+    if (!clean) return;
+
+    const list = state.userTicketsByChave.get(clean) || [];
+    const next = [ticket, ...list.filter((item) => item?.id !== ticket.id)].slice(0, 12);
+    state.userTicketsByChave.set(clean, next);
+  }
+
+  function knownTickets(chave) {
+    const clean = digitsOnly(chave || '');
+    const fromMap = clean ? (state.userTicketsByChave.get(clean) || []) : [];
+    const fromCache = cachedTickets(clean);
+    const byId = new Map();
+
+    [...fromMap, ...fromCache].forEach((ticket) => {
+      if (ticket?.id && !byId.has(ticket.id)) byId.set(ticket.id, ticket);
+    });
+
+    return [...byId.values()].sort((a, b) => {
+      const left = toMillis(b.ultimaOcorrenciaEm) || Number(b.ultimaOcorrenciaEmMs || 0) || toMillis(b.atualizadoEm) || Number(b.atualizadoEmMs || 0);
+      const right = toMillis(a.ultimaOcorrenciaEm) || Number(a.ultimaOcorrenciaEmMs || 0) || toMillis(a.atualizadoEm) || Number(a.atualizadoEmMs || 0);
+      return left - right;
+    });
+  }
+
+  function shouldMonitorTicket(ticket) {
+    return !!(ticket?.id && ticket?.chave && isActiveComercialStatus(ticket.status));
+  }
+
+  function startTicketMonitor(ref, seedTicket = null) {
+    if (!ref || !seedTicket?.id || !shouldMonitorTicket(seedTicket)) return;
+    if (state.ticketDocUnsubs.has(ref.id)) return;
+
+    const unsub = ref.onSnapshot((snap) => {
+      if (!snap.exists) {
+        const currentUnsub = state.ticketDocUnsubs.get(ref.id);
+        if (currentUnsub) {
+          try { currentUnsub(); } catch (_) {}
+          state.ticketDocUnsubs.delete(ref.id);
+        }
+        return;
+      }
+
+      const ticket = { id: snap.id, ...snap.data() };
+      rememberTicketInMaps(ticket);
+      rememberTicket(ticket);
+      renderTargetCardsFromKnownTickets();
+
+      if (!isActiveComercialStatus(ticket.status)) {
+        const currentUnsub = state.ticketDocUnsubs.get(ref.id);
+        if (currentUnsub) {
+          try { currentUnsub(); } catch (_) {}
+          state.ticketDocUnsubs.delete(ref.id);
+        }
+      }
+    }, (error) => {
+      console.warn('[Comercial] Monitor do chamado falhou:', error);
+      const currentUnsub = state.ticketDocUnsubs.get(ref.id);
+      if (currentUnsub) {
+        try { currentUnsub(); } catch (_) {}
+        state.ticketDocUnsubs.delete(ref.id);
+      }
+    });
+
+    state.ticketDocUnsubs.set(ref.id, unsub);
+  }
+
+  function stopAllTicketMonitors() {
+    state.ticketDocUnsubs.forEach((unsub) => {
+      try { unsub(); } catch (_) {}
+    });
+    state.ticketDocUnsubs.clear();
+  }
+
+  function syncVisibleKnownMonitors() {
+    if (!state.user || !state.profile) {
+      stopAllTicketMonitors();
+      return;
+    }
+
+    const desired = new Map();
+
+    for (const card of targetCards()) {
+      if (desired.size >= MAX_VISIBLE_ACTIVE_MONITORS) break;
+
+      const data = parseCard(card);
+      for (const ticket of knownTickets(data.chave)) {
+        if (desired.size >= MAX_VISIBLE_ACTIVE_MONITORS) break;
+        if (!shouldMonitorTicket(ticket)) continue;
+
+        const ref = db.collection('comercial_chamados').doc(ticket.id);
+        desired.set(ref.id, { ref, ticket });
+      }
+    }
+
+    state.ticketDocUnsubs.forEach((unsub, id) => {
+      if (!desired.has(id)) {
+        try { unsub(); } catch (_) {}
+        state.ticketDocUnsubs.delete(id);
+      }
+    });
+
+    desired.forEach(({ ref, ticket }) => startTicketMonitor(ref, ticket));
+  }
+
+  function renderTargetCardsFromKnownTickets() {
+    targetCards().forEach(renderCardFromKnownTickets);
   }
 
   /********************************************************************
@@ -1021,6 +1209,13 @@
       .comercial-box-body{padding:8px 9px 9px;background:#fff7ed;border-left:4px solid #db2777}
       .comercial-last-text{margin-top:3px;padding:6px 7px;border-radius:9px;background:#fff;border:1px solid #fed7aa;color:#334155;overflow-wrap:anywhere;white-space:pre-wrap}
       .comercial-box small{color:#64748b;display:block;margin-top:5px}
+      .comercial-status-reaberto .comercial-box-head{background:linear-gradient(135deg,#f59e0b,#ea580c)}
+      .comercial-status-em_tratamento .comercial-box-head{background:linear-gradient(135deg,#b54708,#f97316)}
+      .comercial-status-informacoes_divergentes .comercial-box-head,.comercial-status-devolver_recusar .comercial-box-head,.comercial-status-cancelado .comercial-box-head{background:linear-gradient(135deg,#b42318,#ef4444)}
+      .comercial-status-pedido_corrigido .comercial-box-head,.comercial-status-pronto .comercial-box-head,.comercial-status-resolvido .comercial-box-head{background:linear-gradient(135deg,#067647,#12b76a)}
+      .comercial-status-em_tratamento .comercial-box-body{border-left-color:#f97316;background:#fff7ed}
+      .comercial-status-informacoes_divergentes .comercial-box-body,.comercial-status-devolver_recusar .comercial-box-body,.comercial-status-cancelado .comercial-box-body{border-left-color:#ef4444;background:#fef3f2}
+      .comercial-status-pedido_corrigido .comercial-box-body,.comercial-status-pronto .comercial-box-body,.comercial-status-resolvido .comercial-box-body{border-left-color:#12b76a;background:#ecfdf3}
       .comercial-overlay{position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:999999;display:none;align-items:center;justify-content:center;padding:20px}
       .comercial-overlay.open{display:flex}
       .comercial-modal{width:min(610px,calc(100vw - 32px));max-height:calc(100vh - 36px);background:#fff;border-radius:18px;box-shadow:0 24px 60px rgba(0,0,0,.22);overflow:auto;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
@@ -1425,6 +1620,8 @@
       cleanUnusedIcons(card);
       renderCardFromKnownTickets(card);
     });
+
+    syncVisibleKnownMonitors();
   }
 
   function cleanUnusedIcons(card) {
@@ -1494,7 +1691,7 @@
 
   function renderCardFromKnownTickets(card) {
     const data = parseCard(card);
-    const tickets = cachedTickets(data.chave);
+    const tickets = knownTickets(data.chave);
 
     if (!tickets.length) {
       $('.comercial-box', card)?.remove();
@@ -1517,11 +1714,13 @@
       .slice(0, 3)
       .map((ticket) => {
         const comprador = ticket.compradorNome ? ` • ${ticket.compradorNome}` : '';
-        return `${ticket.filaNome || ticket.fila || '—'} / ${ticket.tipoDivergenciaNome || ticket.tipoDivergencia || '—'}${comprador}`;
+        const treating = ticket.operadorTratamentoNome ? ` • tratando: ${ticket.operadorTratamentoNome}` : '';
+        return `${ticket.filaNome || ticket.fila || '—'} / ${ticket.tipoDivergenciaNome || ticket.tipoDivergencia || '—'}${comprador}${treating}`;
       })
       .join('\n');
 
-    box.className = `comercial-box comercial-status-${String(status).replace(/[^a-z0-9_-]/gi, '_')}`;
+    const statusClass = String(status).replace(/[^a-z0-9_-]/gi, '_');
+    box.className = `comercial-box comercial-status-${statusClass}`;
     box.innerHTML = `
       <div class="comercial-box-head">
         <span class="comercial-box-title"><img src="${COMERCIAL_ICON_URL}" alt=""> Comercial</span>
@@ -1748,11 +1947,14 @@
         btn.textContent = 'Saindo...';
       }
 
+      stopAllTicketMonitors();
       await auth.signOut();
 
       state.user = null;
       state.profile = null;
       state.profileLoading = null;
+      state.userTicketsByChave.clear();
+      state.userTicketsById.clear();
       state.activeFornecedor = null;
       state.activeFornecedorRef = null;
       state.compradoresConfig = null;
@@ -1860,6 +2062,10 @@
       const ref = db.collection('comercial_chamados').doc(docId);
       const snap = await ref.get();
       const exists = snap.exists;
+      const previousTicket = exists ? { id: snap.id, ...snap.data() } : null;
+      const previousStatus = previousTicket?.status || '';
+      const finalStatus = statusAfterInfradeskOccurrence(exists, previousStatus);
+      const historyType = historyTypeForStatus(finalStatus, exists, previousStatus);
       const now = firebase.firestore.FieldValue.serverTimestamp();
 
       const basePayload = {
@@ -1894,7 +2100,7 @@
       if (!exists) {
         await ref.set({
           ...basePayload,
-          status: 'aberto',
+          status: finalStatus,
           abertoPor: state.user.uid,
           abertoPorNome: selectedUserName(),
           abertoPorEmail: state.user.email,
@@ -1905,13 +2111,14 @@
       } else {
         await ref.update({
           ...basePayload,
+          ...ticketStatusPayload(finalStatus),
           ocorrenciasCount: firebase.firestore.FieldValue.increment(1)
         });
       }
 
       await ref.collection('historico').add({
         texto: comment,
-        tipo: exists ? 'observacao' : 'criacao',
+        tipo: historyType,
         fila: divergence.fila,
         filaNome: divergence.filaNome,
         tipoDivergencia: divergence.tipoDivergencia,
@@ -1939,7 +2146,7 @@
       const localTicket = {
         id: ref.id,
         ...basePayload,
-        status: 'aberto',
+        status: finalStatus,
         ultimaOcorrenciaEm: new Date(),
         atualizadoEm: new Date(),
         ultimaOcorrenciaEmMs: Date.now(),
@@ -1947,10 +2154,11 @@
       };
 
       rememberTicket(localTicket);
+      if (shouldMonitorTicket(localTicket)) startTicketMonitor(ref, localTicket);
 
-      if (card) renderCardBox(card, cachedTickets(data.chave));
+      if (card) renderCardBox(card, knownTickets(data.chave));
 
-      showToast(exists ? 'Ocorrência adicionada no Comercial.' : 'Divergência aberta no Comercial.', 'success');
+      showToast(!exists ? 'Divergência aberta no Comercial.' : finalStatus === 'reaberto' ? 'Divergência reaberta no Comercial.' : 'Ocorrência adicionada no Comercial.', 'success');
       closeModal();
     } catch (error) {
       console.error('[Comercial] Erro ao salvar:', error);
