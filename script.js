@@ -35,7 +35,7 @@ const firebaseConfig = {
   appId: '1:602637992147:web:fc930856cc72f598a31426'
 };
 
-const APP_VERSION = 'Comercial Site v1.1.2';
+const APP_VERSION = 'Comercial Site v1.1.3';
 const BOOTSTRAP_ADMIN_EMAIL = 'crfenxuto01@gmail.com';
 
 const STATUS_LABELS = {
@@ -298,6 +298,34 @@ function canChangeStatus(ticket) {
   return ticket && (isAdmin() || canTreatFila(ticket.fila));
 }
 
+function isTicketReservedByMe(ticket) {
+  if (!ticket || !state.user?.uid) return false;
+  const uid = state.user.uid;
+  return ticket.responsavelId === uid
+    || ticket.operadorTratamentoId === uid
+    || ticket.reservadoPor === uid
+    || ticket.reservadoPorId === uid;
+}
+
+function shouldShowTicketForCurrentUser(ticket, selectedStatus = '') {
+  if (!ticket || !state.user) return false;
+  if (isAdmin()) return true;
+
+  const status = canonicalStatus(ticket.status, ticket.fila);
+
+  // Usuário CRF/solicitante comum só enxerga o que ele abriu.
+  if (!canTreatFila(ticket.fila)) return ticket.abertoPor === state.user.uid;
+
+  // Compras/Cadastro veem todos os abertos/reabertos da fila.
+  // Mas chamado em tratamento fica privado para quem reservou,
+  // exceto quando o filtro escolhido for exatamente "Em tratamento".
+  if (status === 'em_tratamento' && selectedStatus !== 'em_tratamento') {
+    return isTicketReservedByMe(ticket);
+  }
+
+  return true;
+}
+
 function finalStatusFor(status) {
   return FINAL_STATUSES.includes(status);
 }
@@ -484,13 +512,27 @@ function stopTicketStreams() {
   state.unsubTickets = [];
 }
 
+function ticketInitialOrderMillis(ticket) {
+  return timestampMillis(ticket?.criadoEm)
+    || timestampMillis(ticket?.aberturaEm)
+    || timestampMillis(ticket?.primeiraOcorrenciaEm)
+    || timestampMillis(ticket?.atualizadoEm)
+    || 0;
+}
+
 function sortTickets(tickets) {
   return [...tickets].sort((a, b) => {
-    const aStatus = canonicalStatus(a.status, a.fila);
-    const bStatus = canonicalStatus(b.status, b.fila);
-    const s = (STATUS_ORDER[aStatus] ?? 99) - (STATUS_ORDER[bStatus] ?? 99);
-    if (s !== 0) return s;
-    return (ticketStartedAtMillis(a) || Date.now()) - (ticketStartedAtMillis(b) || Date.now());
+    // Ordem fixa de fila: mais antigo primeiro.
+    // Não usamos status, atualizadoEm ou última ocorrência para não "pular" a linha
+    // quando alguém reservar/responder o chamado.
+    const left = ticketInitialOrderMillis(a) || Number.MAX_SAFE_INTEGER;
+    const right = ticketInitialOrderMillis(b) || Number.MAX_SAFE_INTEGER;
+    if (left !== right) return left - right;
+
+    const chamadoDiff = String(a.chamadoInfradeskId || '').localeCompare(String(b.chamadoInfradeskId || ''), 'pt-BR', { numeric: true });
+    if (chamadoDiff !== 0) return chamadoDiff;
+
+    return String(a.id || '').localeCompare(String(b.id || ''), 'pt-BR');
   });
 }
 
@@ -529,7 +571,8 @@ function startTicketStreams() {
       snapshot.forEach((docSnap) => local.set(docSnap.id, { id: docSnap.id, ...docSnap.data() }));
       snapshotMaps[index] = local;
       rebuildTicketsFromSnapshots(snapshotMaps);
-      els.liveStatus.textContent = `${state.tickets.length} chamado(s) carregado(s) • ${APP_VERSION}`;
+      const visibleCount = filteredTickets().length;
+      els.liveStatus.textContent = `${visibleCount} visível(eis) de ${state.tickets.length} carregado(s) • ${APP_VERSION}`;
     }, (error) => {
       console.error(error);
       const permission = error?.code === 'permission-denied';
@@ -616,20 +659,21 @@ function filteredTickets(base = state.tickets) {
   const start = dateInputMillis(els.dateStart.value, false);
   const end = dateInputMillis(els.dateEnd.value, true);
 
-  return base.filter((ticket) => {
+  return sortTickets(base.filter((ticket) => {
     const ticketStatus = canonicalStatus(ticket.status, ticket.fila);
 
+    if (!shouldShowTicketForCurrentUser(ticket, status)) return false;
     if (search && !ticketSearchText(ticket).includes(search)) return false;
     if (fila !== 'todos' && ticket.fila !== fila) return false;
     if (status === 'ativos' && !ACTIVE_STATUSES.includes(ticketStatus)) return false;
     if (status !== 'todos' && status !== 'ativos' && ticketStatus !== status) return false;
     if (compradorId !== 'todos' && ticket.compradorId !== compradorId) return false;
 
-    const created = timestampMillis(ticket.criadoEm) || timestampMillis(ticket.atualizadoEm);
+    const created = ticketInitialOrderMillis(ticket);
     if (start && created < start) return false;
     if (end && created > end) return false;
     return true;
-  });
+  }));
 }
 
 function renderAll() {
