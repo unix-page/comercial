@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Comercial • Infradesk → Divergências NF
 // @namespace    comercial/infradesk
-// @version      1.0.5
+// @version      1.0.6
 // @description  Comercial Infradesk: abre divergências comerciais/cadastro no Firebase, com login Google/e-mail e loader page-context.
 // @author       Comercial
 // @match        https://*.infradesk.app/backend/chamados/painel*
@@ -29,7 +29,7 @@
   /********************************************************************
    * CONFIGURAÇÕES
    ********************************************************************/
-  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.5-site-sync';
+  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.6-chave-unica';
   const COMERCIAL_ICON_URL = 'https://unix-page.github.io/comercial/comercial.png';
   const COMERCIAL_UPDATE_URL = 'https://unix-page.github.io/comercial/comercial.js';
 
@@ -47,6 +47,8 @@
   const COMERCIAL_CACHE_KEY = 'comercial_chamados_cache_v1';
   const COMERCIAL_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
   const MAX_VISIBLE_ACTIVE_MONITORS = 12;
+  const MAX_VISIBLE_LOOKUPS_PER_SCAN = 10;
+  const COMERCIAL_CHAVE_LOOKUP_TTL_MS = 1000 * 60 * 2;
 
   const firebaseConfig = {
     apiKey: 'AIzaSyBpWLYK1cejNpUAo5NMk8ecSSQrYMVf6-0',
@@ -100,6 +102,8 @@
     ticketDocUnsubs: new Map(),
     userTicketsByChave: new Map(),
     userTicketsById: new Map(),
+    chaveLookupAt: new Map(),
+    chaveLookupPromises: new Map(),
     activeCard: null,
     activeData: null,
     activeFornecedor: null,
@@ -137,6 +141,8 @@
     state.profileLoading = null;
     state.userTicketsByChave.clear();
     state.userTicketsById.clear();
+    state.chaveLookupAt.clear();
+    state.chaveLookupPromises.clear();
     stopAllTicketMonitors();
 
     if (!user) {
@@ -380,7 +386,18 @@
   }
 
   function comercialDocId(chave, fila, tipoDivergencia) {
+    // Compatibilidade com versões antigas que criavam um documento por chave+fila+tipo.
     return `nf_${hashText(`${TIPO_CHAMADO}:${digitsOnly(chave)}:${fila}:${tipoDivergencia}`)}`;
+  }
+
+  function comercialDocIdUnico(chave) {
+    // V1.0.6: documento canônico por chave NF-e.
+    // Isso impede abrir a mesma nota duas vezes daqui pra frente.
+    return `nf_${hashText(`${TIPO_CHAMADO}:${digitsOnly(chave)}`)}`;
+  }
+
+  function typedChaveBusca(chave) {
+    return `${TIPO_CHAMADO}:${digitsOnly(chave)}`;
   }
 
   function fornecedorDocId(data) {
@@ -457,6 +474,15 @@
     state.userTicketsByChave.set(clean, next);
   }
 
+  function ticketRecencyMs(ticket) {
+    return toMillis(ticket?.ultimaOcorrenciaEm)
+      || Number(ticket?.ultimaOcorrenciaEmMs || 0)
+      || toMillis(ticket?.atualizadoEm)
+      || Number(ticket?.atualizadoEmMs || 0)
+      || toMillis(ticket?.criadoEm)
+      || 0;
+  }
+
   function knownTickets(chave) {
     const clean = digitsOnly(chave || '');
     const fromMap = clean ? (state.userTicketsByChave.get(clean) || []) : [];
@@ -468,10 +494,50 @@
     });
 
     return [...byId.values()].sort((a, b) => {
-      const left = toMillis(b.ultimaOcorrenciaEm) || Number(b.ultimaOcorrenciaEmMs || 0) || toMillis(b.atualizadoEm) || Number(b.atualizadoEmMs || 0);
-      const right = toMillis(a.ultimaOcorrenciaEm) || Number(a.ultimaOcorrenciaEmMs || 0) || toMillis(a.atualizadoEm) || Number(a.atualizadoEmMs || 0);
-      return left - right;
+      const activeDiff = Number(isActiveComercialStatus(b.status)) - Number(isActiveComercialStatus(a.status));
+      if (activeDiff !== 0) return activeDiff;
+      return ticketRecencyMs(b) - ticketRecencyMs(a);
     });
+  }
+
+  function cardsWithChave(chave) {
+    const clean = digitsOnly(chave || '');
+    if (!clean) return [];
+    return targetCards().filter((card) => digitsOnly(parseCard(card).chave) === clean);
+  }
+
+  function renderCardsForChave(chave) {
+    cardsWithChave(chave).forEach(renderCardFromKnownTickets);
+  }
+
+  function uniqueVisibleChaves() {
+    const seen = new Set();
+    const out = [];
+
+    targetCards().forEach((card) => {
+      const chave = digitsOnly(parseCard(card).chave);
+      if (chave && !seen.has(chave)) {
+        seen.add(chave);
+        out.push(chave);
+      }
+    });
+
+    return out;
+  }
+
+  function chooseMainTicketForChave(tickets = []) {
+    const list = tickets.filter((ticket) => ticket?.id);
+    if (!list.length) return null;
+
+    return [...list].sort((a, b) => {
+      const activeDiff = Number(isActiveComercialStatus(b.status)) - Number(isActiveComercialStatus(a.status));
+      if (activeDiff !== 0) return activeDiff;
+
+      const finalDiff = Number(isFinalComercialStatus(a.status)) - Number(isFinalComercialStatus(b.status));
+      if (finalDiff !== 0) return finalDiff;
+
+      return ticketRecencyMs(b) - ticketRecencyMs(a);
+    })[0];
   }
 
   function shouldMonitorTicket(ticket) {
@@ -495,7 +561,7 @@
       const ticket = { id: snap.id, ...snap.data() };
       rememberTicketInMaps(ticket);
       rememberTicket(ticket);
-      renderTargetCardsFromKnownTickets();
+      renderCardsForChave(ticket.chave);
 
       if (!isActiveComercialStatus(ticket.status)) {
         const currentUnsub = state.ticketDocUnsubs.get(ref.id);
@@ -556,6 +622,108 @@
 
   function renderTargetCardsFromKnownTickets() {
     targetCards().forEach(renderCardFromKnownTickets);
+  }
+
+  async function readTicketRefIfExists(ref) {
+    try {
+      const snap = await ref.get();
+      return snap.exists ? { ref, ticket: { id: snap.id, ...snap.data() } } : null;
+    } catch (error) {
+      console.warn('[Comercial] Não consegui ler chamado por referência:', error);
+      return null;
+    }
+  }
+
+  async function lookupTicketsByChave(chave, force = false) {
+    const clean = digitsOnly(chave || '');
+    if (!clean || !state.user || !state.profile) return [];
+
+    const nowMs = Date.now();
+    const last = Number(state.chaveLookupAt.get(clean) || 0);
+
+    if (!force && last && nowMs - last < COMERCIAL_CHAVE_LOOKUP_TTL_MS) {
+      return knownTickets(clean);
+    }
+
+    if (state.chaveLookupPromises.has(clean)) {
+      return state.chaveLookupPromises.get(clean);
+    }
+
+    const task = (async () => {
+      state.chaveLookupAt.set(clean, Date.now());
+
+      const found = new Map();
+
+      const addTicket = (ticket) => {
+        if (ticket?.id && !found.has(ticket.id)) {
+          found.set(ticket.id, ticket);
+          rememberTicket(ticket);
+        }
+      };
+
+      const canonicalRef = db.collection('comercial_chamados').doc(comercialDocIdUnico(clean));
+      const canonical = await readTicketRefIfExists(canonicalRef);
+      if (canonical?.ticket) addTicket(canonical.ticket);
+
+      // Verifica tickets que já estavam no cache local, porque versões antigas podiam ter ID por chave+fila+tipo.
+      for (const cached of knownTickets(clean).slice(0, 8)) {
+        if (!cached?.id || found.has(cached.id)) continue;
+        const checked = await readTicketRefIfExists(db.collection('comercial_chamados').doc(cached.id));
+        if (checked?.ticket) addTicket(checked.ticket);
+      }
+
+      try {
+        const snap = await db.collection('comercial_chamados')
+          .where('chaveBusca', '==', typedChaveBusca(clean))
+          .limit(8)
+          .get();
+
+        snap.forEach((docSnap) => addTicket({ id: docSnap.id, ...docSnap.data() }));
+      } catch (error) {
+        console.warn('[Comercial] Consulta por chaveBusca falhou:', error);
+      }
+
+      renderCardsForChave(clean);
+      syncVisibleKnownMonitors();
+
+      return knownTickets(clean);
+    })().finally(() => {
+      state.chaveLookupPromises.delete(clean);
+    });
+
+    state.chaveLookupPromises.set(clean, task);
+    return task;
+  }
+
+  function syncVisibleCardLookups(force = false) {
+    if (!state.user || !state.profile || state.profile.ativo === false) return;
+
+    uniqueVisibleChaves()
+      .slice(0, MAX_VISIBLE_LOOKUPS_PER_SCAN)
+      .forEach((chave) => {
+        lookupTicketsByChave(chave, force).catch((error) => {
+          console.warn('[Comercial] Lookup visível falhou:', error);
+        });
+      });
+  }
+
+  async function findExistingTicketForSave(chave) {
+    const clean = digitsOnly(chave || '');
+
+    await lookupTicketsByChave(clean, true);
+
+    const mainTicket = chooseMainTicketForChave(knownTickets(clean));
+
+    if (mainTicket?.id) {
+      return {
+        exists: true,
+        ref: db.collection('comercial_chamados').doc(mainTicket.id),
+        ticket: mainTicket
+      };
+    }
+
+    const ref = db.collection('comercial_chamados').doc(comercialDocIdUnico(clean));
+    return { exists: false, ref, ticket: null };
   }
 
   /********************************************************************
@@ -1201,14 +1369,14 @@
       .comercial-card-btn:hover{background:#fce7f3!important;border-color:#db2777!important}
       .comercial-card-btn img{width:18px!important;height:18px!important;display:block!important;border-radius:4px!important}
       .comercial-card-btn.comercial-missing-key{opacity:.35!important;filter:grayscale(1)!important}
-      .comercial-box{clear:both;margin:9px 0 10px;padding:0;border:1px solid rgba(219,39,119,.20);background:#fff;border-radius:12px;color:#172033;font-size:12px;line-height:1.35;overflow:hidden;box-shadow:0 10px 22px rgba(15,23,42,.10)}
-      .comercial-box-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 9px;font-weight:900;color:#fff;background:linear-gradient(135deg,#db2777,#f97316)}
-      .comercial-box-title{display:inline-flex;align-items:center;gap:6px;min-width:0}
-      .comercial-box-title img{width:18px;height:18px;border-radius:5px;flex:0 0 auto}
-      .comercial-chip{display:inline-flex;align-items:center;border-radius:999px;padding:2px 7px;font-size:10px;font-weight:900;background:rgba(255,255,255,.96);color:#be185d;border:1px solid rgba(255,255,255,.65);white-space:nowrap}
-      .comercial-box-body{padding:8px 9px 9px;background:#fff7ed;border-left:4px solid #db2777}
-      .comercial-last-text{margin-top:3px;padding:6px 7px;border-radius:9px;background:#fff;border:1px solid #fed7aa;color:#334155;overflow-wrap:anywhere;white-space:pre-wrap}
-      .comercial-box small{color:#64748b;display:block;margin-top:5px}
+      .comercial-box{clear:both;margin:5px 0 6px;padding:0;border:1px solid rgba(219,39,119,.18);background:#fff;border-radius:9px;color:#172033;font-size:10.5px;line-height:1.22;overflow:hidden;box-shadow:0 5px 12px rgba(15,23,42,.08)}
+      .comercial-box-head{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 6px;font-weight:900;color:#fff;background:linear-gradient(135deg,#db2777,#f97316)}
+      .comercial-box-title{display:inline-flex;align-items:center;gap:4px;min-width:0}
+      .comercial-box-title img{width:14px;height:14px;border-radius:4px;flex:0 0 auto}
+      .comercial-chip{display:inline-flex;align-items:center;border-radius:999px;padding:1px 6px;font-size:9px;font-weight:900;background:rgba(255,255,255,.96);color:#be185d;border:1px solid rgba(255,255,255,.65);white-space:nowrap}
+      .comercial-box-body{padding:5px 6px 6px;background:#fff7ed;border-left:3px solid #db2777}
+      .comercial-last-text{margin-top:0;padding:4px 5px;border-radius:7px;background:#fff;border:1px solid #fed7aa;color:#334155;overflow-wrap:anywhere;white-space:pre-wrap}
+      .comercial-box small{color:#64748b;display:block;margin-top:3px;font-size:9.5px}
       .comercial-status-reaberto .comercial-box-head{background:linear-gradient(135deg,#f59e0b,#ea580c)}
       .comercial-status-em_tratamento .comercial-box-head{background:linear-gradient(135deg,#b54708,#f97316)}
       .comercial-status-informacoes_divergentes .comercial-box-head,.comercial-status-devolver_recusar .comercial-box-head,.comercial-status-cancelado .comercial-box-head{background:linear-gradient(135deg,#b42318,#ef4444)}
@@ -1621,6 +1789,7 @@
       renderCardFromKnownTickets(card);
     });
 
+    syncVisibleCardLookups(false);
     syncVisibleKnownMonitors();
   }
 
@@ -1706,28 +1875,21 @@
 
     const box = ensureCardBox(card);
     const top = tickets[0];
-    const count = tickets.length;
     const status = top.status || 'aberto';
     const label = STATUS_LABELS[status] || status;
 
-    const resumo = tickets
-      .slice(0, 3)
-      .map((ticket) => {
-        const comprador = ticket.compradorNome ? ` • ${ticket.compradorNome}` : '';
-        const treating = ticket.operadorTratamentoNome ? ` • tratando: ${ticket.operadorTratamentoNome}` : '';
-        return `${ticket.filaNome || ticket.fila || '—'} / ${ticket.tipoDivergenciaNome || ticket.tipoDivergencia || '—'}${comprador}${treating}`;
-      })
-      .join('\n');
+    const comprador = top.compradorNome ? ` • ${top.compradorNome}` : '';
+    const treating = top.operadorTratamentoNome ? ` • tratando: ${top.operadorTratamentoNome}` : '';
+    const resumo = `${top.filaNome || top.fila || '—'} / ${top.tipoDivergenciaNome || top.tipoDivergencia || '—'}${comprador}${treating}`;
 
     const statusClass = String(status).replace(/[^a-z0-9_-]/gi, '_');
     box.className = `comercial-box comercial-status-${statusClass}`;
     box.innerHTML = `
       <div class="comercial-box-head">
         <span class="comercial-box-title"><img src="${COMERCIAL_ICON_URL}" alt=""> Comercial</span>
-        <span class="comercial-chip">${escapeHtml(label)}${count > 1 ? ` • ${count}` : ''}</span>
+        <span class="comercial-chip">${escapeHtml(label)}</span>
       </div>
       <div class="comercial-box-body">
-        <div><strong>Divergência registrada</strong></div>
         <div class="comercial-last-text">${escapeHtml(resumo)}</div>
         <small>${escapeHtml(top.ultimaOcorrenciaTexto || 'Registrado no Comercial.')} • ${escapeHtml(formatDate(top.ultimaOcorrenciaEm || top.atualizadoEm))}</small>
       </div>
@@ -2055,24 +2217,43 @@
     try {
       if (saveBtn) {
         saveBtn.disabled = true;
-        saveBtn.textContent = 'Salvando...';
+        saveBtn.textContent = 'Verificando chave...';
       }
 
-      const docId = comercialDocId(data.chave, divergence.fila, divergence.tipoDivergencia);
-      const ref = db.collection('comercial_chamados').doc(docId);
-      const snap = await ref.get();
-      const exists = snap.exists;
-      const previousTicket = exists ? { id: snap.id, ...snap.data() } : null;
+      // V1.0.6:
+      // Antes de criar, procura qualquer chamado já existente com a mesma chave.
+      // Se existir, atualiza/reabre o mesmo documento. Se não existir, cria o ID canônico por chave.
+      const lookup = await findExistingTicketForSave(data.chave);
+      const ref = lookup.ref;
+      const exists = lookup.exists;
+      const previousTicket = lookup.ticket || null;
       const previousStatus = previousTicket?.status || '';
       const finalStatus = statusAfterInfradeskOccurrence(exists, previousStatus);
       const historyType = historyTypeForStatus(finalStatus, exists, previousStatus);
+      const keepExistingClassification = exists && isActiveComercialStatus(previousStatus);
       const now = firebase.firestore.FieldValue.serverTimestamp();
+
+      if (saveBtn) saveBtn.textContent = exists ? 'Atualizando...' : 'Criando...';
+
+      const effectiveFila = keepExistingClassification ? (previousTicket.fila || divergence.fila) : divergence.fila;
+      const effectiveFilaNome = keepExistingClassification ? (previousTicket.filaNome || divergence.filaNome) : divergence.filaNome;
+      const effectiveTipo = keepExistingClassification ? (previousTicket.tipoDivergencia || divergence.tipoDivergencia) : divergence.tipoDivergencia;
+      const effectiveTipoNome = keepExistingClassification ? (previousTicket.tipoDivergenciaNome || divergence.tipoDivergenciaNome) : divergence.tipoDivergenciaNome;
+      const effectiveCompradorId = effectiveFila === 'compras'
+        ? (keepExistingClassification ? (previousTicket.compradorId || comprador.compradorId || '') : comprador.compradorId)
+        : '';
+      const effectiveCompradorNome = effectiveFila === 'compras'
+        ? (keepExistingClassification ? (previousTicket.compradorNome || comprador.compradorNome || '') : comprador.compradorNome)
+        : '';
 
       const basePayload = {
         tipoChamado: TIPO_CHAMADO,
         chamadoInfradeskId: data.chamadoId || '',
+        chamadosInfradeskIds: firebase.firestore.FieldValue.arrayUnion(data.chamadoId || ''),
         chave: data.chave,
-        chaveBusca: `${TIPO_CHAMADO}:${digitsOnly(data.chave)}`,
+        chaveBusca: typedChaveBusca(data.chave),
+        chaveUnica: digitsOnly(data.chave),
+        docUnicoPorChave: true,
         numeroNf: data.numeroNf || '',
         cnpj: data.cnpj || '',
         empresa: data.empresa || '',
@@ -2081,12 +2262,12 @@
         fornecedorTexto: data.fornecedorTexto || '',
         categoriaFornecedor,
         tipoNota: categoriaFornecedor,
-        fila: divergence.fila,
-        filaNome: divergence.filaNome,
-        tipoDivergencia: divergence.tipoDivergencia,
-        tipoDivergenciaNome: divergence.tipoDivergenciaNome,
-        compradorId: divergence.fila === 'compras' ? comprador.compradorId : '',
-        compradorNome: divergence.fila === 'compras' ? comprador.compradorNome : '',
+        fila: effectiveFila,
+        filaNome: effectiveFilaNome,
+        tipoDivergencia: effectiveTipo,
+        tipoDivergenciaNome: effectiveTipoNome,
+        compradorId: effectiveCompradorId,
+        compradorNome: effectiveCompradorNome,
         ultimaDescricaoInfradesk: data.ultimaDescricao || '',
         statusInfradesk: data.statusInfradesk || '',
         atualizadoEm: now,
@@ -2107,7 +2288,7 @@
           abertoPorPapel: state.profile?.papel || '',
           criadoEm: now,
           ocorrenciasCount: 1
-        });
+        }, { merge: true });
       } else {
         await ref.update({
           ...basePayload,
@@ -2119,12 +2300,14 @@
       await ref.collection('historico').add({
         texto: comment,
         tipo: historyType,
-        fila: divergence.fila,
-        filaNome: divergence.filaNome,
-        tipoDivergencia: divergence.tipoDivergencia,
-        tipoDivergenciaNome: divergence.tipoDivergenciaNome,
-        compradorId: divergence.fila === 'compras' ? comprador.compradorId : '',
-        compradorNome: divergence.fila === 'compras' ? comprador.compradorNome : '',
+        status: finalStatus,
+        fila: effectiveFila,
+        filaNome: effectiveFilaNome,
+        tipoDivergencia: effectiveTipo,
+        tipoDivergenciaNome: effectiveTipoNome,
+        compradorId: effectiveCompradorId,
+        compradorNome: effectiveCompradorNome,
+        chamadoInfradeskId: data.chamadoId || '',
         usuarioId: state.user.uid,
         usuarioNome: selectedUserName(),
         usuarioEmail: state.user.email,
@@ -2156,9 +2339,17 @@
       rememberTicket(localTicket);
       if (shouldMonitorTicket(localTicket)) startTicketMonitor(ref, localTicket);
 
-      if (card) renderCardBox(card, knownTickets(data.chave));
+      // Alimenta todos os cards visíveis com a mesma chave, não só o card clicado.
+      renderCardsForChave(data.chave);
+      syncVisibleKnownMonitors();
 
-      showToast(!exists ? 'Divergência aberta no Comercial.' : finalStatus === 'reaberto' ? 'Divergência reaberta no Comercial.' : 'Ocorrência adicionada no Comercial.', 'success');
+      const msg = !exists
+        ? 'Divergência aberta no Comercial.'
+        : finalStatus === 'reaberto'
+          ? 'Divergência existente reaberta no Comercial.'
+          : 'Essa chave já tinha chamado no Comercial. Ocorrência adicionada no chamado existente.';
+
+      showToast(msg, 'success');
       closeModal();
     } catch (error) {
       console.error('[Comercial] Erro ao salvar:', error);
