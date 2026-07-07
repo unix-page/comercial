@@ -44,10 +44,10 @@
   const COMERCIAL_PROFILE_CACHE_PREFIX = 'comercial_profile_v1_';
   const COMERCIAL_PROFILE_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
 
-  const COMERCIAL_CACHE_KEY = 'comercial_chamados_cache_v1';
+  const COMERCIAL_CACHE_KEY = 'comercial_chamados_cache_v2_economico';
   const COMERCIAL_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
-  const MAX_VISIBLE_ACTIVE_MONITORS = 12;
-  const MAX_VISIBLE_LOOKUPS_PER_SCAN = 10;
+  const MAX_VISIBLE_ACTIVE_MONITORS = 1;
+  const MAX_VISIBLE_LOOKUPS_PER_SCAN = 0;
   const COMERCIAL_CHAVE_LOOKUP_TTL_MS = 1000 * 60 * 2;
 
   const firebaseConfig = {
@@ -643,16 +643,16 @@
 
     const desired = new Map();
 
-    for (const card of targetCards()) {
-      if (desired.size >= MAX_VISIBLE_ACTIVE_MONITORS) break;
-
-      const data = parseCard(card);
-      for (const ticket of knownTickets(data.chave)) {
-        if (desired.size >= MAX_VISIBLE_ACTIVE_MONITORS) break;
+    // V1.0.8 econômico:
+    // no Infradesk, mantemos no máximo 1 listener e somente do chamado/card ativo.
+    // Não criamos listener para todos os cards visíveis.
+    const activeChave = digitsOnly(state.activeData?.chave || '');
+    if (activeChave) {
+      for (const ticket of knownTickets(activeChave)) {
         if (!shouldMonitorTicket(ticket)) continue;
-
         const ref = db.collection('comercial_chamados').doc(ticket.id);
         desired.set(ref.id, { ref, ticket });
+        break;
       }
     }
 
@@ -752,6 +752,12 @@
 
   function syncVisibleCardLookups(force = false) {
     if (!state.user || !state.profile || state.profile.ativo === false) return;
+
+    // V1.0.8 econômico:
+    // Nunca consulta Firestore automaticamente por todos os cards visíveis.
+    // Isso estava multiplicando leituras em telas com muitos cards/reloads.
+    // A consulta forte pela chave acontece ao clicar no ícone e ao salvar.
+    if (!force) return;
 
     uniqueVisibleChaves()
       .slice(0, MAX_VISIBLE_LOOKUPS_PER_SCAN)
@@ -1843,10 +1849,15 @@
       }
 
       cleanUnusedIcons(card);
+
+      // Modo econômico:
+      // não consulta Firestore automaticamente para cada card visível.
+      // Renderiza apenas o que já está em memória/cache desta versão.
       renderCardFromKnownTickets(card);
     });
 
-    syncVisibleCardLookups(false);
+    // Modo econômico:
+    // consultas ao banco acontecem no clique do ícone/salvar, não em cada varredura da tela.
     syncVisibleKnownMonitors();
   }
 
