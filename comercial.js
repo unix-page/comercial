@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Comercial • Infradesk → Divergências NF
 // @namespace    comercial/infradesk
-// @version      1.0.8
+// @version      1.0.9
 // @description  Comercial Infradesk: abre divergências comerciais/cadastro no Firebase, com login Google/e-mail e loader page-context.
 // @author       Comercial
 // @match        https://*.infradesk.app/backend/chamados/painel*
@@ -29,7 +29,7 @@
   /********************************************************************
    * CONFIGURAÇÕES
    ********************************************************************/
-  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.8-economico';
+  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.9-xabuia-sync';
   const COMERCIAL_ICON_URL = 'https://unix-page.github.io/comercial/comercial.png';
   const COMERCIAL_UPDATE_URL = 'https://unix-page.github.io/comercial/comercial.js';
 
@@ -46,7 +46,7 @@
 
   const COMERCIAL_CACHE_KEY = 'comercial_chamados_cache_v2_economico';
   const COMERCIAL_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
-  const MAX_VISIBLE_ACTIVE_MONITORS = 1;
+  const MAX_VISIBLE_ACTIVE_MONITORS = 8;
   const MAX_VISIBLE_LOOKUPS_PER_SCAN = 0;
   const COMERCIAL_CHAVE_LOOKUP_TTL_MS = 1000 * 60 * 2;
 
@@ -643,17 +643,19 @@
 
     const desired = new Map();
 
-    // V1.0.8 econômico:
-    // no Infradesk, mantemos no máximo 1 listener e somente do chamado/card ativo.
-    // Não criamos listener para todos os cards visíveis.
-    const activeChave = digitsOnly(state.activeData?.chave || '');
-    if (activeChave) {
-      for (const ticket of knownTickets(activeChave)) {
-        if (!shouldMonitorTicket(ticket)) continue;
-        const ref = db.collection('comercial_chamados').doc(ticket.id);
-        desired.set(ref.id, { ref, ticket });
-        break;
-      }
+    // V1.0.9: volta ao padrão Xabuia.
+    // Econômico: NÃO consulta Firestore para card desconhecido.
+    // Imediato: mantém listener apenas para chamados já conhecidos/cacheados e ativos.
+    for (const card of targetCards()) {
+      if (desired.size >= MAX_VISIBLE_ACTIVE_MONITORS) break;
+
+      const data = parseCard(card);
+      const ticket = chooseMainTicketForChave(knownTickets(data.chave));
+
+      if (!shouldMonitorTicket(ticket)) continue;
+
+      const ref = db.collection('comercial_chamados').doc(ticket.id);
+      desired.set(ref.id, { ref, ticket });
     }
 
     state.ticketDocUnsubs.forEach((unsub, id) => {
@@ -1856,8 +1858,9 @@
       renderCardFromKnownTickets(card);
     });
 
-    // Modo econômico:
-    // consultas ao banco acontecem no clique do ícone/salvar, não em cada varredura da tela.
+    // Padrão Xabuia:
+    // consulta ao banco só no clique/salvar.
+    // aqui apenas mantém listeners de chamados JÁ conhecidos e ativos.
     syncVisibleKnownMonitors();
   }
 
