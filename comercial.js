@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Comercial • Infradesk → Divergências NF
 // @namespace    comercial/infradesk
-// @version      1.0.3
+// @version      1.0.4
 // @description  Comercial Infradesk: abre divergências comerciais/cadastro no Firebase, com login Google/e-mail e loader page-context.
 // @author       Comercial
 // @match        https://*.infradesk.app/backend/chamados/painel*
@@ -29,7 +29,7 @@
   /********************************************************************
    * CONFIGURAÇÕES
    ********************************************************************/
-  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.3-loader-ready';
+  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.4-loader-ready';
   const COMERCIAL_ICON_URL = 'https://unix-page.github.io/comercial/comercial.png';
   const COMERCIAL_UPDATE_URL = 'https://unix-page.github.io/comercial/comercial.js';
 
@@ -598,11 +598,10 @@
     config[fila].tipos.push({ id, nome });
     await saveDivergenciasConfig(config);
 
-    const mainFila = $('#comercial-fila');
-    if (mainFila) mainFila.value = fila;
+    // V1.0.4: criar tipo no gerenciador NÃO seleciona automaticamente no formulário principal.
+    // O usuário escolhe manualmente a fila e o tipo para evitar abertura acidental.
+    renderFilaOptions();
     renderDivergenciaOptions();
-    const tipoSelect = $('#comercial-tipo-divergencia');
-    if (tipoSelect) tipoSelect.value = id;
 
     if (input) input.value = '';
     const filaSelect = $('#comercial-type-manager-fila');
@@ -857,8 +856,9 @@
       row.innerHTML = `
         <span class="comercial-manager-name">${escapeHtml(comprador.nome)}${linked ? ' <em>vinculado</em>' : ''}</span>
         <span class="comercial-manager-row-actions">
-          <button class="comercial-manager-link" type="button" data-comprador-id="${escapeHtml(comprador.id)}" ${!hasActiveCnpj ? 'disabled' : ''}>${linked ? 'Selecionar' : 'Vincular'}</button>
-          ${isAdmin() ? `<button class="comercial-manager-delete" type="button" data-comprador-id="${escapeHtml(comprador.id)}" title="Excluir comprador">Excluir</button>` : ''}
+          <button class="comercial-manager-link" type="button" data-comprador-id="${escapeHtml(comprador.id)}" ${!hasActiveCnpj || linked ? 'disabled' : ''}>Vincular</button>
+          ${linked ? `<button class="comercial-manager-unlink" type="button" data-comprador-id="${escapeHtml(comprador.id)}">Desvincular</button>` : ''}
+          ${isAdmin() ? `<button class="comercial-manager-delete" type="button" data-comprador-id="${escapeHtml(comprador.id)}" title="Excluir comprador da lista geral">Excluir</button>` : ''}
         </span>
       `;
       list.appendChild(row);
@@ -900,12 +900,9 @@
       if (input) input.value = '';
       await loadCompradoresConfig(true);
 
-      if (data?.cnpj) {
-        await persistFornecedorBuyerLink(compradorId, true);
-        showToast('Comprador criado e vinculado ao CNPJ.', 'success');
-      } else {
-        showToast('Comprador criado.', 'success');
-      }
+      // V1.0.4: criar comprador NÃO vincula automaticamente ao CNPJ.
+      // O comprador só aparece no select principal depois que o usuário clicar em Vincular.
+      showToast('Comprador criado. Clique em Vincular para ligar ao CNPJ desta NF.', 'success');
 
       renderBuyerManager();
       renderCompradorSelect();
@@ -928,6 +925,34 @@
     const select = $('#comercial-comprador');
     if (select) select.value = compradorId;
     renderBuyerManager();
+  }
+
+  async function unlinkBuyerFromManager(compradorId) {
+    if (!compradorId) return;
+    if (!state.activeFornecedorRef) return showToast('Nenhum CNPJ ativo para desvincular.', 'error');
+
+    const comprador = compradorById(compradorId);
+    const nome = comprador?.nome || compradorId;
+
+    if (!confirm(`Desvincular o comprador "${nome}" deste CNPJ?`)) return;
+
+    try {
+      const nextIds = activeLinkedCompradorIds().filter((id) => id !== compradorId);
+      await state.activeFornecedorRef.set({
+        compradorIds: nextIds,
+        atualizadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+        atualizadoPor: state.user.uid,
+        atualizadoPorEmail: state.user.email
+      }, { merge: true });
+
+      state.activeFornecedor = { ...(state.activeFornecedor || {}), compradorIds: nextIds };
+      renderCompradorSelect();
+      renderBuyerManager();
+      showToast('Comprador desvinculado deste CNPJ.', 'success');
+    } catch (error) {
+      console.error('[Comercial] Erro ao desvincular comprador:', error);
+      showToast(error?.code === 'permission-denied' ? 'Permissão negada para desvincular comprador.' : (error.message || 'Erro ao desvincular comprador.'), 'error');
+    }
   }
 
   async function deleteBuyerFromManager(compradorId) {
@@ -1025,7 +1050,7 @@
       .comercial-manager-modal{width:min(520px,calc(100vw - 32px));max-height:calc(100vh - 44px);overflow:auto;background:#fff;border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.30);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
       .comercial-manager-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border-bottom:1px solid #eef2f7;position:sticky;top:0;background:#fff;z-index:1}
       .comercial-manager-head strong{font-size:14px;color:#172033}.comercial-manager-head small{display:block;color:#64748b;font-size:11px;margin-top:2px}
-      .comercial-manager-body{padding:10px 12px;display:grid;gap:8px}.comercial-manager-grid{display:grid;grid-template-columns:1fr auto;gap:6px;align-items:end}.comercial-manager-grid select,.comercial-manager-grid input{width:100%;border:1px solid #dfe7f0;border-radius:10px;padding:8px 9px;font-size:12px;outline:none}.comercial-manager-list{display:grid;gap:6px;max-height:280px;overflow:auto}.comercial-manager-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 8px;border:1px solid #eef2f7;background:#f8fafc;border-radius:10px}.comercial-manager-row.is-linked{background:#ecfdf3;border-color:#bbf7d0}.comercial-manager-name{font-size:12px;font-weight:800;color:#172033;min-width:0;overflow:hidden;text-overflow:ellipsis}.comercial-manager-name em{font-style:normal;margin-left:6px;color:#067647;font-size:10px}.comercial-manager-row-actions{display:flex;gap:5px;flex:0 0 auto}.comercial-manager-link,.comercial-manager-delete{border:0;border-radius:9px;padding:6px 8px;font-size:11px;font-weight:900;cursor:pointer}.comercial-manager-link{background:#db2777;color:#fff}.comercial-manager-link:disabled{opacity:.5;cursor:not-allowed}.comercial-manager-delete{background:#fff;border:1px solid #fecdd3;color:#9f1239}.comercial-manager-empty{font-size:12px;color:#64748b;padding:10px;border:1px dashed #cbd5e1;border-radius:10px;text-align:center}
+      .comercial-manager-body{padding:10px 12px;display:grid;gap:8px}.comercial-manager-grid{display:grid;grid-template-columns:1fr auto;gap:6px;align-items:end}.comercial-manager-grid select,.comercial-manager-grid input{width:100%;border:1px solid #dfe7f0;border-radius:10px;padding:8px 9px;font-size:12px;outline:none}.comercial-manager-list{display:grid;gap:6px;max-height:280px;overflow:auto}.comercial-manager-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 8px;border:1px solid #eef2f7;background:#f8fafc;border-radius:10px}.comercial-manager-row.is-linked{background:#ecfdf3;border-color:#bbf7d0}.comercial-manager-name{font-size:12px;font-weight:800;color:#172033;min-width:0;overflow:hidden;text-overflow:ellipsis}.comercial-manager-name em{font-style:normal;margin-left:6px;color:#067647;font-size:10px}.comercial-manager-row-actions{display:flex;gap:5px;flex:0 0 auto}.comercial-manager-link,.comercial-manager-unlink,.comercial-manager-delete{border:0;border-radius:9px;padding:6px 8px;font-size:11px;font-weight:900;cursor:pointer}.comercial-manager-link{background:#db2777;color:#fff}.comercial-manager-unlink{background:#fef3c7;color:#92400e;border:1px solid #fde68a}.comercial-manager-link:disabled{opacity:.5;cursor:not-allowed}.comercial-manager-delete{background:#fff;border:1px solid #fecdd3;color:#9f1239}.comercial-manager-empty{font-size:12px;color:#64748b;padding:10px;border:1px dashed #cbd5e1;border-radius:10px;text-align:center}
       .comercial-actions{display:flex;gap:8px;justify-content:flex-end;padding:8px 12px 12px;position:sticky;bottom:0;background:#fff;border-top:1px solid #eef2f7}
       .comercial-btn{border:0;border-radius:10px;padding:8px 12px;font-weight:800;min-height:34px;cursor:pointer;font-size:12px}
       .comercial-btn.primary{background:#db2777;color:#fff}
@@ -1214,6 +1239,8 @@
     $('#comercial-buyer-manager-list').addEventListener('click', (event) => {
       const link = event.target.closest('.comercial-manager-link');
       if (link) linkBuyerFromManager(link.dataset.compradorId);
+      const unlink = event.target.closest('.comercial-manager-unlink');
+      if (unlink) unlinkBuyerFromManager(unlink.dataset.compradorId);
       const del = event.target.closest('.comercial-manager-delete');
       if (del) deleteBuyerFromManager(del.dataset.compradorId);
     });
@@ -1305,7 +1332,7 @@
     if (typeBtn) typeBtn.style.display = isAdmin() ? '' : 'none';
 
     const buyerBtn = $('#comercial-open-buyer-manager');
-    if (buyerBtn) buyerBtn.style.display = ($('#comercial-fila')?.value || 'compras') === 'compras' ? '' : 'none';
+    if (buyerBtn) buyerBtn.style.display = ($('#comercial-fila')?.value || '') === 'compras' ? '' : 'none';
 
     const defaultBtn = $('#comercial-create-default-list');
     if (defaultBtn) defaultBtn.style.display = state.divergenciasConfigExists ? 'none' : '';
@@ -1316,9 +1343,15 @@
     if (!select) return;
 
     const config = normalizeDivergenciasConfig(state.divergenciasConfig || DEFAULT_DIVERGENCIAS);
-    const previous = select.value || 'compras';
+    const previous = select.value || '';
 
     select.innerHTML = '';
+
+    const empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = 'Selecione a fila';
+    select.appendChild(empty);
+
     Object.entries(config).forEach(([fila, def]) => {
       const opt = document.createElement('option');
       opt.value = fila;
@@ -1326,20 +1359,25 @@
       select.appendChild(opt);
     });
 
-    select.value = config[previous] ? previous : 'compras';
+    select.value = config[previous] ? previous : '';
     renderBuyerRequirement();
   }
 
   function renderDivergenciaOptions() {
     const select = $('#comercial-tipo-divergencia');
-    const fila = $('#comercial-fila')?.value || 'compras';
+    const fila = $('#comercial-fila')?.value || '';
     if (!select) return;
 
     const config = normalizeDivergenciasConfig(state.divergenciasConfig || DEFAULT_DIVERGENCIAS);
-    const tipos = config[fila]?.tipos || [];
+    const tipos = fila ? (config[fila]?.tipos || []) : [];
 
-    const previous = select.value;
+    const previous = select.value || '';
     select.innerHTML = '';
+
+    const empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = fila ? 'Selecione o tipo' : 'Selecione a fila primeiro';
+    select.appendChild(empty);
 
     tipos.forEach((tipo) => {
       const opt = document.createElement('option');
@@ -1348,7 +1386,7 @@
       select.appendChild(opt);
     });
 
-    if (tipos.some((item) => item.id === previous)) select.value = previous;
+    select.value = tipos.some((item) => item.id === previous) ? previous : '';
   }
 
   function renderCategoriaOptions(value) {
@@ -1358,7 +1396,7 @@
   }
 
   function renderBuyerRequirement() {
-    const fila = $('#comercial-fila')?.value || 'compras';
+    const fila = $('#comercial-fila')?.value || '';
     const wrap = $('#comercial-comprador-wrap');
     if (wrap) wrap.style.display = fila === 'compras' ? 'grid' : 'none';
     renderConfigControls();
@@ -1537,7 +1575,7 @@
       renderCompradorSelect();
     }
 
-    setTimeout(() => $('#comercial-tipo-divergencia')?.focus(), 50);
+    setTimeout(() => $('#comercial-fila')?.focus(), 50);
   }
 
   function renderActiveDataInfo(data) {
