@@ -1,10 +1,4 @@
-from pathlib import Path
-import zipfile
-
-base = Path("/mnt/data/comercial-loader")
-base.mkdir(parents=True, exist_ok=True)
-
-loader = r"""// ==UserScript==
+// ==UserScript==
 // @name         Comercial • Loader oficial page-context
 // @namespace    comercial/infradesk
 // @version      1.0.0
@@ -174,12 +168,3 @@ loader = r"""// ==UserScript==
     loadRemoteComercial();
   }
 })();
-"""
-
-(base / "comercial-loader.user.js").write_text(loader, encoding="utf-8")
-
-zip_path = Path("/mnt/data/comercial-loader.user.zip")
-with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-    z.write(base / "comercial-loader.user.js", arcname="comercial-loader.user.js")
-
-print(zip_path) 
