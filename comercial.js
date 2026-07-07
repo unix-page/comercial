@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Comercial • Infradesk → Divergências NF
 // @namespace    comercial/infradesk
-// @version      1.0.6
+// @version      1.0.8
 // @description  Comercial Infradesk: abre divergências comerciais/cadastro no Firebase, com login Google/e-mail e loader page-context.
 // @author       Comercial
 // @match        https://*.infradesk.app/backend/chamados/painel*
@@ -29,7 +29,7 @@
   /********************************************************************
    * CONFIGURAÇÕES
    ********************************************************************/
-  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.6-chave-unica';
+  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.8-economico';
   const COMERCIAL_ICON_URL = 'https://unix-page.github.io/comercial/comercial.png';
   const COMERCIAL_UPDATE_URL = 'https://unix-page.github.io/comercial/comercial.js';
 
