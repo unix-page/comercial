@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Comercial • Infradesk → Divergências NF
 // @namespace    comercial/infradesk
-// @version      1.0.1
+// @version      1.0.2
 // @description  Comercial Infradesk: abre divergências comerciais/cadastro no Firebase, com login Google/e-mail e loader page-context.
 // @author       Comercial
 // @match        https://*.infradesk.app/backend/chamados/painel*
@@ -29,7 +29,7 @@
   /********************************************************************
    * CONFIGURAÇÕES
    ********************************************************************/
-  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.1-loader-ready';
+  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.2-loader-ready';
   const COMERCIAL_ICON_URL = 'https://unix-page.github.io/comercial/comercial.png';
   const COMERCIAL_UPDATE_URL = 'https://unix-page.github.io/comercial/comercial.js';
 
@@ -669,7 +669,6 @@
 
   function renderCompradorSelect() {
     const select = $('#comercial-comprador');
-    const hint = $('#comercial-comprador-hint');
     const deleteBtn = $('#comercial-delete-buyer');
     if (!select) return;
 
@@ -683,8 +682,7 @@
 
     const empty = document.createElement('option');
     empty.value = '';
-    if (usingLinkedList) empty.textContent = options.length > 1 ? 'Selecione o comprador vinculado' : 'Comprador vinculado ao CNPJ';
-    else empty.textContent = todos.length ? 'Selecione comprador para vincular ao CNPJ' : 'Nenhum comprador cadastrado';
+    empty.textContent = todos.length ? 'Selecione comprador' : 'Nenhum comprador cadastrado';
     select.appendChild(empty);
 
     options.forEach((comprador) => {
@@ -702,19 +700,6 @@
       select.value = '';
     }
 
-    if (hint) {
-      if (usingLinkedList && options.length === 1) {
-        hint.textContent = '1 comprador vinculado ao CNPJ: já deixei selecionado.';
-      } else if (usingLinkedList && options.length > 1) {
-        hint.textContent = 'Mais de 1 comprador vinculado ao CNPJ: escolha quem vai tratar.';
-      } else if (!todos.length) {
-        hint.textContent = '';
-      } else if (todos.length === 1) {
-        hint.textContent = '1 comprador cadastrado no sistema; ao salvar/vincular ele será ligado ao CNPJ.';
-      } else {
-        hint.textContent = 'Nenhum comprador vinculado ainda; selecione um comprador e clique em Vincular.';
-      }
-    }
 
     if (deleteBtn) deleteBtn.style.display = isAdmin() ? '' : 'none';
   }
@@ -792,28 +777,28 @@
 
     try {
       if (existing) {
-        compradorId = existing.id;
-      } else {
-        await db.collection('compradores').doc(compradorId).set({
-          nome,
-          nomeBusca: normalizeAscii(nome),
-          ativo: true,
-          criadoEm: firebase.firestore.FieldValue.serverTimestamp(),
-          criadoPor: state.user.uid,
-          criadoPorEmail: state.user.email,
-          atualizadoEm: firebase.firestore.FieldValue.serverTimestamp(),
-          atualizadoPor: state.user.uid,
-          atualizadoPorEmail: state.user.email
-        }, { merge: false });
-
-        await loadCompradoresConfig(true);
+        showToast('Já existe comprador com esse nome. Selecione ele na lista e clique em Vincular.', 'error');
+        return;
       }
 
+      await db.collection('compradores').doc(compradorId).set({
+        nome,
+        nomeBusca: normalizeAscii(nome),
+        ativo: true,
+        criadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+        criadoPor: state.user.uid,
+        criadoPorEmail: state.user.email,
+        atualizadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+        atualizadoPor: state.user.uid,
+        atualizadoPorEmail: state.user.email
+      }, { merge: false });
+
+      await loadCompradoresConfig(true);
       await persistFornecedorBuyerLink(compradorId, true);
       renderCompradorSelect();
       const select = $('#comercial-comprador');
       if (select) select.value = compradorId;
-      showToast(existing ? 'Comprador já existia e foi vinculado ao CNPJ.' : 'Comprador criado e vinculado ao CNPJ.', 'success');
+      showToast('Comprador criado e vinculado ao CNPJ.', 'success');
     } catch (error) {
       console.error('[Comercial] Erro ao cadastrar comprador:', error);
       showToast(error?.code === 'permission-denied' ? 'Permissão negada para cadastrar comprador. Atualize as regras.' : (error.message || 'Erro ao cadastrar comprador.'), 'error');
@@ -884,42 +869,44 @@
       .comercial-box small{color:#64748b;display:block;margin-top:5px}
       .comercial-overlay{position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:999999;display:none;align-items:center;justify-content:center;padding:20px}
       .comercial-overlay.open{display:flex}
-      .comercial-modal{width:min(640px,calc(100vw - 32px));max-height:calc(100vh - 36px);background:#fff;border-radius:18px;box-shadow:0 24px 60px rgba(0,0,0,.22);overflow:auto;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-      .comercial-modal-head{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #e5e7eb;position:sticky;top:0;background:#fff;z-index:2}
-      .comercial-modal-head img{width:34px;height:34px;border-radius:10px}
-      .comercial-modal-head h3{margin:0;font-size:16px;color:#172033}
-      .comercial-modal-head p{margin:2px 0 0;color:#687386;font-size:12px}
-      .comercial-close{margin-left:auto;border:0;border-radius:10px;background:#f1f5f9;width:34px;height:34px;font-size:18px;line-height:1;cursor:pointer}
-      .comercial-modal-body{padding:12px;display:grid;gap:8px}
+      .comercial-modal{width:min(610px,calc(100vw - 32px));max-height:calc(100vh - 36px);background:#fff;border-radius:18px;box-shadow:0 24px 60px rgba(0,0,0,.22);overflow:auto;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+      .comercial-modal-head{display:flex;align-items:center;gap:10px;padding:9px 11px;border-bottom:1px solid #e5e7eb;position:sticky;top:0;background:#fff;z-index:2}
+      .comercial-modal-head img{width:32px;height:32px;border-radius:10px;flex:0 0 auto}
+      .comercial-title-wrap{min-width:0;line-height:1.1}
+      .comercial-modal-head h3{margin:0;font-size:15px;color:#172033}
+      .comercial-modal-head p{margin:2px 0 0;color:#687386;font-size:11px}
+      .comercial-head-auth{margin-left:auto;max-width:270px;border-radius:999px;padding:5px 9px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;font-size:11px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .comercial-head-auth.ok{background:#ecfdf3;color:#067647;border-color:#bbf7d0}
+      .comercial-close{border:0;border-radius:10px;background:#f1f5f9;width:32px;height:32px;font-size:18px;line-height:1;cursor:pointer;flex:0 0 auto}
+      .comercial-modal-body{padding:10px 12px;display:grid;gap:8px}
       .comercial-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-      .comercial-grid-3{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end}
-      .comercial-info{border:1px solid #fbcfe8;background:#fdf2f8;color:#831843;padding:8px 10px;border-radius:10px;font-size:11px;line-height:1.35}
+      .comercial-info{border:1px solid #fbcfe8;background:#fdf2f8;color:#831843;padding:7px 9px;border-radius:10px;font-size:10.5px;line-height:1.3}
       .comercial-field{display:grid;gap:4px}
       .comercial-field label{font-weight:800;color:#687386;font-size:11px}
       .comercial-field select,.comercial-field input,.comercial-field textarea{width:100%;border:1px solid #dfe7f0;border-radius:10px;padding:7px 9px;outline:none;color:#172033;background:#fff;font-size:12px}
-      .comercial-field textarea{min-height:56px;resize:vertical}
+      .comercial-field textarea{min-height:50px;resize:vertical}
       .comercial-field select:focus,.comercial-field input:focus,.comercial-field textarea:focus{border-color:#db2777;box-shadow:0 0 0 3px rgba(219,39,119,.12)}
-      .comercial-field small{font-size:11px;color:#64748b}
+      .comercial-section-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:7px 8px;border:1px dashed #f9a8d4;background:#fff7fb;border-radius:10px}
+      .comercial-section-title{font-size:11px;font-weight:900;color:#831843;text-transform:uppercase;letter-spacing:.02em}
+      .comercial-action-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
       .comercial-actions{display:flex;gap:8px;justify-content:flex-end;padding:8px 12px 12px;position:sticky;bottom:0;background:#fff;border-top:1px solid #eef2f7}
       .comercial-btn{border:0;border-radius:10px;padding:8px 12px;font-weight:800;min-height:34px;cursor:pointer;font-size:12px}
       .comercial-btn.primary{background:#db2777;color:#fff}
       .comercial-btn.ghost{background:#f8fafc;border:1px solid #dfe7f0;color:#172033}
       .comercial-btn.warn{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412}
-      .comercial-btn.small{min-height:34px;padding:8px 10px;font-size:12px}
-      .comercial-btn.round{width:34px;padding:0;font-size:18px}
+      .comercial-btn.small{min-height:32px;padding:7px 10px;font-size:12px}
+      .comercial-btn.round{width:32px;padding:0;font-size:18px}
       .comercial-btn:disabled{opacity:.6;cursor:not-allowed}
-      .comercial-authbar{padding:8px 10px;border-radius:10px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;font-size:11px}
-      .comercial-authbar.ok{background:#ecfdf3;color:#067647;border-color:#bbf7d0}
+      .comercial-authbar{display:none!important}
       .comercial-login-panel{display:none;border:1px solid #fbcfe8;background:#fdf2f8;border-radius:10px;padding:8px 10px;gap:8px}
       .comercial-login-panel.open{display:grid}
       .comercial-login-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-      .comercial-login-actions,.comercial-config-actions{display:flex;gap:8px;flex-wrap:wrap}
-      .comercial-config-actions{padding:8px 10px;border:1px dashed #f9a8d4;background:#fff7fb;border-radius:10px}
+      .comercial-login-actions{display:flex;gap:8px;flex-wrap:wrap}
       .comercial-toast{position:fixed;top:18px;right:18px;z-index:1000000;background:#111827;color:#fff;padding:12px 14px;border-radius:12px;box-shadow:0 18px 45px rgba(15,23,42,.18);max-width:min(420px,calc(100vw - 36px));display:none}
       .comercial-toast.open{display:block}
       .comercial-toast.success{background:#067647}
       .comercial-toast.error{background:#b42318}
-      .comercial-buyer-actions{display:flex;gap:6px;align-items:end;flex-wrap:wrap}.comercial-buyer-actions .comercial-btn{white-space:nowrap}@media(max-width:760px){.comercial-grid,.comercial-grid-3,.comercial-login-grid{grid-template-columns:1fr}.comercial-actions{flex-wrap:wrap}}
+      @media(max-width:760px){.comercial-grid,.comercial-login-grid{grid-template-columns:1fr}.comercial-actions{flex-wrap:wrap}.comercial-head-auth{max-width:190px}}
     `;
     document.head.appendChild(style);
   }
@@ -934,16 +921,15 @@
       <div class="comercial-modal" role="dialog" aria-modal="true" aria-labelledby="comercial-modal-title">
         <div class="comercial-modal-head">
           <img src="${COMERCIAL_ICON_URL}" alt="Comercial">
-          <div>
+          <div class="comercial-title-wrap">
             <h3 id="comercial-modal-title">Abrir Comercial</h3>
             <p>${TIPO_CHAMADO_NOME}</p>
           </div>
+          <div id="comercial-head-auth" class="comercial-head-auth">Verificando login...</div>
           <button id="comercial-close" class="comercial-close" type="button">×</button>
         </div>
 
         <div class="comercial-modal-body">
-          <div id="comercial-authbar" class="comercial-authbar">Verificando login...</div>
-
           <div id="comercial-login-panel" class="comercial-login-panel">
             <div class="comercial-login-grid">
               <div class="comercial-field">
@@ -977,35 +963,27 @@
             </div>
           </div>
 
-          <div id="comercial-config-actions" class="comercial-config-actions" style="display:none">
-            <button id="comercial-create-default-list" class="comercial-btn warn small" type="button">Criar lista padrão no Firebase</button>
-            <button id="comercial-add-type" class="comercial-btn ghost small" type="button">+ Novo tipo</button>
-            <button id="comercial-delete-type" class="comercial-btn ghost small" type="button">Excluir tipo selecionado</button>
+          <div id="comercial-config-actions" class="comercial-section-actions" style="display:none">
+            <span class="comercial-section-title">Tipos divergências</span>
+            <span class="comercial-action-row">
+              <button id="comercial-create-default-list" class="comercial-btn warn small" type="button">Criar lista padrão</button>
+              <button id="comercial-add-type" class="comercial-btn ghost small" type="button">+ Novo tipo</button>
+              <button id="comercial-delete-type" class="comercial-btn ghost small" type="button">Excluir tipo</button>
+            </span>
           </div>
 
-          <div class="comercial-grid">
-            <div class="comercial-field">
-              <label for="comercial-fornecedor">Fornecedor</label>
-              <input id="comercial-fornecedor" type="text" readonly>
-            </div>
-
-            <div class="comercial-field">
-              <label for="comercial-categoria">Tipo real da nota</label>
-              <input id="comercial-categoria" type="text" readonly>
-            </div>
+          <div id="comercial-comprador-wrap" class="comercial-field">
+            <label for="comercial-comprador">Comprador</label>
+            <select id="comercial-comprador"></select>
           </div>
 
-          <div id="comercial-comprador-wrap" class="comercial-grid-3">
-            <div class="comercial-field">
-              <label for="comercial-comprador">Comprador</label>
-              <select id="comercial-comprador"></select>
-              <small id="comercial-comprador-hint"></small>
-            </div>
-            <div class="comercial-buyer-actions">
+          <div id="comercial-buyer-actions-wrap" class="comercial-section-actions">
+            <span class="comercial-section-title">Compradores</span>
+            <span class="comercial-action-row">
               <button id="comercial-link-buyer" class="comercial-btn ghost small" type="button" title="Vincular comprador selecionado ao CNPJ">Vincular</button>
               <button id="comercial-add-buyer" class="comercial-btn primary round" type="button" title="Criar comprador e vincular ao CNPJ">+</button>
               <button id="comercial-delete-buyer" class="comercial-btn ghost small" type="button" title="Excluir comprador da lista geral">Excluir</button>
-            </div>
+            </span>
           </div>
 
           <div class="comercial-field">
@@ -1066,7 +1044,7 @@
   }
 
   function renderAuthInfo() {
-    const authbar = $('#comercial-authbar');
+    const authbar = $('#comercial-head-auth') || $('#comercial-authbar');
     const loginBtn = $('#comercial-login');
     const logoutBtn = $('#comercial-logout');
     const saveBtn = $('#comercial-save');
@@ -1081,39 +1059,39 @@
     }
 
     if (!state.user) {
-      authbar.className = 'comercial-authbar';
-      authbar.innerHTML = 'Entre com Google ou e-mail/senha do Comercial.';
+      authbar.className = 'comercial-head-auth';
+      authbar.innerHTML = 'Entre no Comercial';
       saveBtn.disabled = true;
       renderConfigControls();
       return;
     }
 
     if (!state.profile) {
-      authbar.className = 'comercial-authbar';
-      authbar.innerHTML = `Logado como <strong>${escapeHtml(state.user.email)}</strong>, aguardando perfil Comercial.`;
+      authbar.className = 'comercial-head-auth';
+      authbar.innerHTML = `Perfil pendente: ${escapeHtml(state.user.email)}`;
       saveBtn.disabled = true;
       renderConfigControls();
       return;
     }
 
     if (state.profile.ativo === false) {
-      authbar.className = 'comercial-authbar';
-      authbar.innerHTML = 'Sua conta Comercial está bloqueada.';
+      authbar.className = 'comercial-head-auth';
+      authbar.innerHTML = 'Conta bloqueada';
       saveBtn.disabled = true;
       renderConfigControls();
       return;
     }
 
     if (!canOpenTicket()) {
-      authbar.className = 'comercial-authbar';
-      authbar.innerHTML = `Logado como <strong>${escapeHtml(state.profile.nome || state.user.email)}</strong>, mas este perfil não abre divergência pelo Infradesk.`;
+      authbar.className = 'comercial-head-auth';
+      authbar.innerHTML = `${escapeHtml(state.profile.nome || state.user.email)} • sem permissão`;
       saveBtn.disabled = true;
       renderConfigControls();
       return;
     }
 
-    authbar.className = 'comercial-authbar ok';
-    authbar.innerHTML = `Salvando como <strong>${escapeHtml(state.profile.nome || state.user.email)}</strong> • Perfil: <strong>${escapeHtml(state.profile.papel || '—')}</strong>.`;
+    authbar.className = 'comercial-head-auth ok';
+    authbar.innerHTML = `Salvando como ${escapeHtml(state.profile.nome || state.user.email)} • Perfil: ${escapeHtml(state.profile.papel || '—')}`;
     saveBtn.disabled = false;
     renderConfigControls();
   }
@@ -1177,9 +1155,9 @@
   function renderBuyerRequirement() {
     const fila = $('#comercial-fila')?.value || 'compras';
     const wrap = $('#comercial-comprador-wrap');
-    if (!wrap) return;
-
-    wrap.style.display = fila === 'compras' ? 'grid' : 'none';
+    const actions = $('#comercial-buyer-actions-wrap');
+    if (wrap) wrap.style.display = fila === 'compras' ? 'grid' : 'none';
+    if (actions) actions.style.display = fila === 'compras' ? 'flex' : 'none';
   }
 
   /********************************************************************
@@ -1335,9 +1313,7 @@
     }
 
     $('#comercial-info').innerHTML = renderActiveDataInfo(state.activeData);
-    $('#comercial-fornecedor').value = state.activeData.fornecedorNome || '';
     $('#comercial-comment').value = '';
-    renderCategoriaOptions(state.activeData.categoriaFornecedor);
 
     if (state.user && !state.profile) await loadProfileIfNeeded(false);
 
@@ -1362,11 +1338,9 @@
 
   function renderActiveDataInfo(data) {
     return `
-      <div><strong>Chamado:</strong> ${escapeHtml(data.chamadoId || '—')} • <strong>Status:</strong> ${escapeHtml(data.statusInfradesk || '—')}</div>
+      <div><strong>Chamado:</strong> ${escapeHtml(data.chamadoId || '—')} • <strong>Status:</strong> ${escapeHtml(data.statusInfradesk || '—')} • <strong>NF:</strong> ${escapeHtml(data.numeroNf || '—')} • <strong>CNPJ:</strong> ${escapeHtml(data.cnpj || '—')}</div>
+      <div><strong>Fornecedor:</strong> ${escapeHtml(data.fornecedorTexto || data.fornecedorNome || '—')} • <strong>Tipo:</strong> ${escapeHtml(data.categoriaFornecedor || '—')} • <strong>Empresa:</strong> ${escapeHtml(data.empresa || '—')}</div>
       <div><strong>Chave:</strong> ${escapeHtml(data.chave)}</div>
-      <div><strong>NF:</strong> ${escapeHtml(data.numeroNf || '—')} • <strong>CNPJ:</strong> ${escapeHtml(data.cnpj || '—')}</div>
-      <div><strong>Empresa:</strong> ${escapeHtml(data.empresa || '—')}</div>
-      <div><strong>Fornecedor:</strong> ${escapeHtml(data.fornecedorTexto || data.fornecedorNome || '—')} • <strong>Tipo da nota:</strong> ${escapeHtml(data.categoriaFornecedor || '—')}</div>
     `;
   }
 
@@ -1622,7 +1596,7 @@
       return;
     }
 
-    const categoriaFornecedor = $('#comercial-categoria')?.value || data.categoriaFornecedor || '';
+    const categoriaFornecedor = data.categoriaFornecedor || '';
 
     if (divergence.fila === 'compras' && comprador.compradorId && !activeLinkedCompradorIds().includes(comprador.compradorId)) {
       await persistFornecedorBuyerLink(comprador.compradorId, true);
