@@ -35,7 +35,7 @@ const firebaseConfig = {
   appId: '1:602637992147:web:fc930856cc72f598a31426'
 };
 
-const APP_VERSION = 'Comercial Site v1.1.6 data-hoje-ativas';
+const APP_VERSION = 'Comercial Site v1.1.7 ao-vivo-alerta';
 const BOOTSTRAP_ADMIN_EMAIL = 'crfenxuto01@gmail.com';
 
 const STATUS_LABELS = {
@@ -129,6 +129,7 @@ const els = {
   compradorFilter: $('compradorFilter'),
   dateStart: $('dateStart'),
   dateEnd: $('dateEnd'),
+  alertSoundToggle: $('alertSoundToggle'),
   refreshBtn: $('refreshBtn'),
   liveStatus: $('liveStatus'),
   tableBody: $('ticketTableBody'),
@@ -177,6 +178,15 @@ const state = {
   history: []
 };
 
+const BASE_DOCUMENT_TITLE = document.title || 'Comercial • Divergências NF';
+const ALERT_SOUND_KEY = 'comercial_alert_sound_enabled_v1';
+const ALERT_SOUND_FILE = './been.mp3';
+let alertAudio = null;
+let liveAlertReady = false;
+let knownOpenAlertIds = new Set();
+let titleAlertInterval = null;
+let titleAlertTimeout = null;
+
 function showToast(message, type = 'info') {
   if (!els.toast) return;
   els.toast.textContent = message;
@@ -188,6 +198,187 @@ function showToast(message, type = 'info') {
 function showOnly(view) {
   [els.authView, els.blockedView, els.appView].forEach((el) => el?.classList.add('hidden'));
   view?.classList.remove('hidden');
+}
+
+
+function ensureAlertSoundButton() {
+  if (els.alertSoundToggle) return;
+
+  const sectionHead = document.querySelector('.table-card .section-head');
+  const refreshBtn = els.refreshBtn;
+  if (!sectionHead || !refreshBtn) return;
+
+  let wrap = refreshBtn.closest('.live-actions');
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.className = 'live-actions';
+    refreshBtn.parentNode.insertBefore(wrap, refreshBtn);
+    wrap.appendChild(refreshBtn);
+  }
+
+  const button = document.createElement('button');
+  button.id = 'alertSoundToggle';
+  button.className = 'alert-sound-toggle sound-off';
+  button.type = 'button';
+  button.title = 'Liga ou desliga o som de alerta de novo chamado';
+  button.textContent = '🔕 Som desligado';
+  wrap.insertBefore(button, refreshBtn);
+  els.alertSoundToggle = button;
+}
+
+function isAlertSoundEnabled() {
+  return localStorage.getItem(ALERT_SOUND_KEY) === '1';
+}
+
+function updateAlertSoundButton() {
+  const button = els.alertSoundToggle;
+  if (!button) return;
+
+  const enabled = isAlertSoundEnabled();
+  button.classList.toggle('sound-on', enabled);
+  button.classList.toggle('sound-off', !enabled);
+  button.textContent = enabled ? '🔔 Som ligado' : '🔕 Som desligado';
+  button.title = enabled
+    ? 'Som de alerta ligado. Clique para desligar.'
+    : 'Som de alerta desligado. Clique para ligar.';
+}
+
+function prepareAlertAudio() {
+  if (!alertAudio) {
+    alertAudio = new Audio(ALERT_SOUND_FILE);
+    alertAudio.preload = 'auto';
+    alertAudio.volume = 0.85;
+  }
+  return alertAudio;
+}
+
+function requestBrowserNotificationPermission() {
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => {});
+  }
+}
+
+function setAlertSoundEnabled(enabled) {
+  localStorage.setItem(ALERT_SOUND_KEY, enabled ? '1' : '0');
+  if (enabled) {
+    prepareAlertAudio();
+    requestBrowserNotificationPermission();
+  }
+  updateAlertSoundButton();
+}
+
+function toggleAlertSound() {
+  const enabled = !isAlertSoundEnabled();
+  setAlertSoundEnabled(enabled);
+  showToast(enabled ? 'Som de alerta ligado.' : 'Som de alerta desligado.', enabled ? 'success' : 'info');
+}
+
+function playNewTicketSound() {
+  if (!isAlertSoundEnabled()) return;
+
+  try {
+    const audio = prepareAlertAudio();
+    audio.currentTime = 0;
+    audio.play().catch(() => {
+      showToast('O navegador bloqueou o som. Clique no botão de som para liberar novamente.', 'info');
+    });
+  } catch (error) {
+    console.warn('Não consegui tocar o alerta sonoro:', error);
+  }
+}
+
+function stopTitleBlink(count = currentAlertTickets().length) {
+  if (titleAlertInterval) window.clearInterval(titleAlertInterval);
+  if (titleAlertTimeout) window.clearTimeout(titleAlertTimeout);
+  titleAlertInterval = null;
+  titleAlertTimeout = null;
+  document.title = count > 0 ? `(${count}) ${BASE_DOCUMENT_TITLE}` : BASE_DOCUMENT_TITLE;
+}
+
+function startTitleBlink(count) {
+  stopTitleBlink(count);
+  let blink = false;
+  titleAlertInterval = window.setInterval(() => {
+    blink = !blink;
+    document.title = blink ? `🔔 ${count} novo(s) • ${BASE_DOCUMENT_TITLE}` : `(${count}) ${BASE_DOCUMENT_TITLE}`;
+  }, 900);
+  titleAlertTimeout = window.setTimeout(() => stopTitleBlink(count), 9000);
+}
+
+function currentAlertTickets(tickets = state.tickets) {
+  return tickets.filter((ticket) => {
+    const status = canonicalStatus(ticket?.status, ticket?.fila);
+    return ['aberto', 'reaberto'].includes(status) && shouldShowTicketForCurrentUser(ticket, 'ativos');
+  });
+}
+
+function ticketAlertLine(ticket) {
+  return [
+    filaLabel(ticket?.fila),
+    ticket?.numeroNf ? `NF ${ticket.numeroNf}` : '',
+    ticket?.fornecedorNome || ticket?.fornecedorTexto || '',
+    ticket?.compradorNome || ''
+  ].filter(Boolean).join(' • ');
+}
+
+function showBrowserNewTicketNotification(newTickets) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+  const first = newTickets[0];
+  const extra = newTickets.length > 1 ? ` e mais ${newTickets.length - 1}` : '';
+  try {
+    new Notification('Nova divergência no Comercial', {
+      body: `${ticketAlertLine(first)}${extra}`,
+      icon: './comercial.png',
+      tag: 'comercial-divergencia-novo-chamado'
+    });
+  } catch (error) {
+    console.warn('Não consegui mostrar notificação do navegador:', error);
+  }
+}
+
+function resetNewTicketAlertBaseline() {
+  liveAlertReady = false;
+  knownOpenAlertIds = new Set();
+  stopTitleBlink(0);
+}
+
+function updateNewTicketAlerts(canAlertNow = true) {
+  const openTickets = currentAlertTickets();
+  const currentIds = new Set(openTickets.map((ticket) => ticket.id).filter(Boolean));
+
+  if (!canAlertNow || !liveAlertReady) {
+    knownOpenAlertIds = currentIds;
+    if (canAlertNow) liveAlertReady = true;
+    stopTitleBlink(currentIds.size);
+    return;
+  }
+
+  const newIds = [...currentIds].filter((id) => !knownOpenAlertIds.has(id));
+  knownOpenAlertIds = currentIds;
+
+  if (!newIds.length) {
+    if (!titleAlertInterval) stopTitleBlink(currentIds.size);
+    return;
+  }
+
+  const newTickets = openTickets.filter((ticket) => newIds.includes(ticket.id));
+  const first = newTickets[0];
+  const message = newTickets.length === 1
+    ? `Novo chamado: ${ticketAlertLine(first)}`
+    : `${newTickets.length} novos chamados na fila.`;
+
+  showToast(message, 'success');
+  playNewTicketSound();
+  showBrowserNewTicketNotification(newTickets);
+  startTitleBlink(currentIds.size);
+}
+
+function initializeAlertControls() {
+  ensureAlertSoundButton();
+  updateAlertSoundButton();
+  els.alertSoundToggle?.addEventListener('click', toggleAlertSound);
 }
 
 function escapeHtml(value) {
@@ -543,6 +734,7 @@ function setAuthMode(mode) {
 function stopTicketStreams() {
   state.unsubTickets.forEach((unsub) => { try { unsub(); } catch (_) {} });
   state.unsubTickets = [];
+  resetNewTicketAlertBaseline();
 }
 
 function ticketInitialOrderMillis(ticket) {
@@ -569,13 +761,14 @@ function sortTickets(tickets) {
   });
 }
 
-function rebuildTicketsFromSnapshots(snapshotMaps) {
+function rebuildTicketsFromSnapshots(snapshotMaps, canAlertNow = true) {
   const map = new Map();
   snapshotMaps.forEach((snapMap) => {
     snapMap.forEach((ticket, id) => map.set(id, { ...ticket, status: canonicalStatus(ticket.status, ticket.fila) }));
   });
   state.tickets = sortTickets([...map.values()]);
   renderAll();
+  updateNewTicketAlerts(canAlertNow);
 }
 
 function baseTicketScopes() {
@@ -673,9 +866,80 @@ function buildTicketQueriesForCurrentFilters() {
 }
 
 async function startTicketStreams() {
-  // Mantém o nome da função para não mexer no restante da tela,
-  // mas agora é carregamento econômico sob demanda, sem listener geral.
-  await loadTicketsOnce();
+  stopTicketStreams();
+  resetNewTicketAlertBaseline();
+
+  if (!state.user || !state.profile) return;
+
+  try {
+    ensureDefaultPeriodFilters();
+
+    const period = currentPeriodRange();
+    const queryDefs = buildTicketQueriesForCurrentFilters();
+    const snapshotMaps = new Map();
+    const initialSnapshotsReceived = new Set();
+
+    if (!queryDefs.length) {
+      state.tickets = [];
+      renderAll();
+      updateNewTicketAlerts(false);
+      if (els.liveStatus) els.liveStatus.textContent = `Ao vivo • nenhum chamado para este perfil/filtro • ${APP_VERSION}`;
+      return;
+    }
+
+    if (els.liveStatus) {
+      els.liveStatus.textContent = `Conectando ao vivo • data ${period.startValue} até ${period.endValue} + ativas antigas • ${APP_VERSION}`;
+    }
+
+    queryDefs.forEach((item, index) => {
+      const streamKey = `${item.key || 'consulta'}|${index}`;
+      const q = ticketQueryFromConstraints(item.constraints, item.max);
+
+      const unsub = onSnapshot(q, (snap) => {
+        const map = new Map();
+        snap.forEach((docSnap) => map.set(docSnap.id, { id: docSnap.id, ...docSnap.data() }));
+        snapshotMaps.set(streamKey, map);
+        initialSnapshotsReceived.add(streamKey);
+
+        const initialComplete = initialSnapshotsReceived.size >= queryDefs.length;
+        rebuildTicketsFromSnapshots([...snapshotMaps.values()], initialComplete);
+
+        const visibleCount = filteredTickets().length;
+        if (els.liveStatus) {
+          els.liveStatus.textContent = initialComplete
+            ? `${visibleCount} visível(eis) de ${state.tickets.length} ao vivo • ${APP_VERSION}`
+            : `Conectando ao vivo ${initialSnapshotsReceived.size}/${queryDefs.length} • ${APP_VERSION}`;
+        }
+      }, (error) => {
+        console.error(error);
+        const needsIndex = error?.code === 'failed-precondition';
+        const permission = error?.code === 'permission-denied';
+
+        if (els.liveStatus) {
+          els.liveStatus.textContent = needsIndex
+            ? 'Consulta ao vivo precisa de índice no Firestore. Veja o console para o link do índice.'
+            : permission
+              ? 'Permissão negada ao acompanhar chamados. Confira rules/perfil.'
+              : 'Erro ao acompanhar chamados ao vivo. Confira regras/permissões.';
+        }
+
+        showToast(
+          needsIndex
+            ? 'O Firestore pediu um índice para esta consulta ao vivo. Abra o console do navegador e clique no link do índice.'
+            : permission
+              ? 'Permissão negada ao acompanhar chamados ao vivo.'
+              : 'Erro ao acompanhar chamados ao vivo.',
+          'error'
+        );
+      });
+
+      state.unsubTickets.push(unsub);
+    });
+  } catch (error) {
+    console.error(error);
+    if (els.liveStatus) els.liveStatus.textContent = 'Erro ao iniciar o modo ao vivo.';
+    showToast(error.message || 'Erro ao iniciar o modo ao vivo.', 'error');
+  }
 }
 
 async function loadTicketsOnce() {
@@ -688,7 +952,7 @@ async function loadTicketsOnce() {
 
     if (els.liveStatus) {
       const period = currentPeriodRange();
-      els.liveStatus.textContent = `Carregando data ${period.startValue} até ${period.endValue} + ativas antigas • ${APP_VERSION}`;
+      els.liveStatus.textContent = `Consulta manual • data ${period.startValue} até ${period.endValue} + ativas antigas • ${APP_VERSION}`;
     }
 
     const queryDefs = buildTicketQueriesForCurrentFilters();
@@ -710,7 +974,7 @@ async function loadTicketsOnce() {
 
     const visibleCount = filteredTickets().length;
     if (els.liveStatus) {
-      els.liveStatus.textContent = `${visibleCount} visível(eis) de ${state.tickets.length} lido(s) • data + ativas antigas • ${APP_VERSION}`;
+      els.liveStatus.textContent = `${visibleCount} visível(eis) de ${state.tickets.length} lido(s) em consulta manual • ${APP_VERSION}`;
     }
   } catch (error) {
     console.error(error);
@@ -958,7 +1222,6 @@ async function reserveTicket(ticket) {
     });
 
     showToast('Chamado reservado.', 'success');
-    await loadTicketsOnce();
   } catch (error) {
     console.error(error);
     showToast(error.message || 'Erro ao reservar chamado.', 'error');
@@ -1130,7 +1393,6 @@ async function saveResponse() {
 
     showToast('Resposta salva.', 'success');
     els.ticketDialog.close();
-    await loadTicketsOnce();
   } catch (error) {
     console.error(error);
     showToast(error.message || 'Erro ao salvar resposta.', 'error');
@@ -1474,16 +1736,16 @@ els.logoutBlockedBtn.addEventListener('click', () => signOut(auth));
 els.dashboardBtn.addEventListener('click', () => switchView('dashboard'));
 els.reportsBtn.addEventListener('click', () => switchView('reports'));
 els.adminBtn.addEventListener('click', () => switchView('admin'));
-els.refreshBtn.addEventListener('click', () => loadTicketsOnce());
+els.refreshBtn.addEventListener('click', () => startTicketStreams());
 els.generateReportsBtn.addEventListener('click', () => { ensureDefaultPeriodFilters(); renderReports(); });
 
 els.searchInput.addEventListener('input', renderAll);
 els.compradorFilter.addEventListener('change', renderAll);
 
-// Estes filtros mudam o conjunto que precisa ser lido do Firestore.
-// Por isso recarregam sob demanda, em vez de usar listener geral.
+// Estes filtros mudam o conjunto acompanhado no Firestore.
+// Ao alterar, reconecta os listeners ao vivo com o novo escopo.
 [els.filaFilter, els.statusFilter, els.dateStart, els.dateEnd]
-  .forEach((el) => el.addEventListener('change', () => loadTicketsOnce()));
+  .forEach((el) => el.addEventListener('change', () => startTicketStreams()));
 
 [els.reportStart, els.reportEnd, els.reportFila].forEach((el) => el.addEventListener('change', renderReports));
 
@@ -1523,4 +1785,5 @@ els.addBuyerBtn.addEventListener('click', addBuyer);
 els.buyerNameInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') addBuyer(); });
 els.usersList.addEventListener('change', (event) => updateUserFromRow(event.target.closest('.user-item')));
 
+initializeAlertControls();
 setAuthMode('login');
