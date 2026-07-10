@@ -1926,8 +1926,14 @@
         addComercialButton(card);
       }
 
+      /*
+       * Primeiro protegemos o Xabuia, depois ocultamos somente
+       * os botões nativos permitidos e protegemos novamente.
+       */
+      protectXabuiaUi(card);
       cleanUnusedIcons(card);
-
+      protectXabuiaUi(card);
+      
       // Modo econômico:
       // não consulta Firestore automaticamente para cada card visível.
       // Renderiza apenas o que já está em memória/cache desta versão.
@@ -1940,16 +1946,88 @@
     syncVisibleKnownMonitors();
   }
 
-  function cleanUnusedIcons(card) {
+  function protectXabuiaUi(card) {
+  if (!card) return;
+
+  const elementosXabuia = $$(
     [
-      'a.btn-sla-pausa',
-      'button.btn-copy-resume',
-      'a.btn-transferir',
-      'a.btn-anexo'
-    ].forEach((selector) => {
-      $$(selector, card).forEach((el) => el.remove());
+      '.xabuia-card-btn',
+      '.xabuia-box',
+      '[id^="xabuia-"]',
+      '[class*="xabuia-"]'
+    ].join(','),
+    card
+  );
+
+  elementosXabuia.forEach((elemento) => {
+    /*
+     * Nunca mexemos no conteúdo do Xabuia.
+     * Apenas desfazemos ocultações acidentais.
+     */
+    elemento.hidden = false;
+    elemento.removeAttribute('aria-hidden');
+
+    if (elemento.style.display === 'none') {
+      elemento.style.removeProperty('display');
+    }
+
+    if (elemento.style.visibility === 'hidden') {
+      elemento.style.removeProperty('visibility');
+    }
+
+    if (elemento.style.opacity === '0') {
+      elemento.style.removeProperty('opacity');
+    }
+  });
+}
+
+  function cleanUnusedIcons(card) {
+  if (!card) return;
+
+  const seletoresPermitidos = [
+    'a.btn-sla-pausa',
+    'button.btn-copy-resume',
+    'a.btn-transferir',
+    'a.btn-anexo'
+  ];
+
+  seletoresPermitidos.forEach((selector) => {
+    $$(selector, card).forEach((elemento) => {
+      /*
+       * PROTEÇÃO TOTAL:
+       * O Comercial jamais pode ocultar ou remover elementos
+       * pertencentes ao Xabuia ou ao próprio Comercial.
+       */
+      const pertenceAoXabuia =
+        elemento.matches?.('.xabuia-card-btn, .xabuia-box') ||
+        elemento.closest?.(
+          '.xabuia-card-btn, .xabuia-box, #xabuia-overlay, [id^="xabuia-"], [class*="xabuia-"]'
+        );
+
+      const pertenceAoComercial =
+        elemento.matches?.('.comercial-card-btn, .comercial-box') ||
+        elemento.closest?.(
+          '.comercial-card-btn, .comercial-box, #comercial-overlay, [id^="comercial-"], [class*="comercial-"]'
+        );
+
+      if (pertenceAoXabuia || pertenceAoComercial) {
+        return;
+      }
+
+      /*
+       * Não removemos mais o elemento do HTML.
+       * Apenas escondemos o ícone original do Infradesk.
+       *
+       * Isso evita quebrar referências, posições e eventos
+       * usados por outros scripts.
+       */
+      elemento.dataset.comercialOcultado = '1';
+      elemento.style.setProperty('display', 'none', 'important');
     });
-  }
+  });
+
+  protectXabuiaUi(card);
+}
 
   function addComercialButton(card) {
     if ($('.comercial-card-btn', card)) return;
@@ -1969,20 +2047,36 @@
       openModal(card);
     });
 
-    const xabuiaBtn = $('.xabuia-card-btn', toolbar) || $('.xabuia-card-btn', card);
-    const anexoBtn = $('.btn-anexo', toolbar) || $('.btn-anexo', card);
-    const feedbackBtn = $('a[title="Registrar Interação"]', toolbar);
+    const xabuiaBtn =
+  $('.xabuia-card-btn', toolbar) ||
+  $('.xabuia-card-btn', card);
 
-    if (xabuiaBtn?.parentElement) {
-      xabuiaBtn.insertAdjacentElement('afterend', btn);
-    } else if (anexoBtn?.parentElement) {
-      anexoBtn.insertAdjacentElement('beforebegin', btn);
-    } else if (feedbackBtn?.parentElement) {
-      feedbackBtn.insertAdjacentElement('afterend', btn);
-    } else {
-      toolbar.appendChild(btn);
-    }
-  }
+const feedbackBtn =
+  $('a[title="Registrar Interação"]', toolbar) ||
+  $('a[title="Registrar Interação"]', card);
+
+const anexoBtn =
+  $('a.btn-anexo:not(.xabuia-card-btn):not(.comercial-card-btn)', toolbar) ||
+  $('a.btn-anexo:not(.xabuia-card-btn):not(.comercial-card-btn)', card);
+
+/*
+ * Ordem obrigatória:
+ *
+ * [ícone do Xabuia] [ícone Comercial]
+ *
+ * O botão Comercial nunca substitui, envolve ou remove o Xabuia.
+ */
+if (xabuiaBtn?.parentElement) {
+  xabuiaBtn.insertAdjacentElement('afterend', btn);
+} else if (feedbackBtn?.parentElement) {
+  feedbackBtn.insertAdjacentElement('afterend', btn);
+} else if (anexoBtn?.parentElement) {
+  anexoBtn.insertAdjacentElement('beforebegin', btn);
+} else {
+  toolbar.appendChild(btn);
+}
+
+protectXabuiaUi(card);
 
   function removeComercialUiFromCard(card) {
     if (!card) return;
