@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Comercial • Infradesk → Divergências NF
 // @namespace    comercial/infradesk
-// @version      1.0.10
+// @version      1.0.11
 // @description  Comercial Infradesk: abre divergências comerciais/cadastro no Firebase, com login Google/e-mail e loader page-context.
 // @author       Comercial
 // @match        https://*.infradesk.app/backend/chamados/painel*
@@ -29,7 +29,7 @@
   /********************************************************************
    * CONFIGURAÇÕES
    ********************************************************************/
-  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.10-clean-cache';
+  const COMERCIAL_VERSION = window.__COMERCIAL_REMOTE_VERSION__ || '1.0.11-protecao-xabuia';
   const COMERCIAL_ICON_URL = 'https://unix-page.github.io/comercial/comercial.png';
   const COMERCIAL_UPDATE_URL = 'https://unix-page.github.io/comercial/comercial.js';
 
@@ -1926,14 +1926,8 @@
         addComercialButton(card);
       }
 
-      /*
-       * Primeiro protegemos o Xabuia, depois ocultamos somente
-       * os botões nativos permitidos e protegemos novamente.
-       */
-      protectXabuiaUi(card);
       cleanUnusedIcons(card);
-      protectXabuiaUi(card);
-      
+
       // Modo econômico:
       // não consulta Firestore automaticamente para cada card visível.
       // Renderiza apenas o que já está em memória/cache desta versão.
@@ -1946,88 +1940,37 @@
     syncVisibleKnownMonitors();
   }
 
-  function protectXabuiaUi(card) {
-  if (!card) return;
+  function isProtectedExternalUi(element) {
+    if (!element) return true;
 
-  const elementosXabuia = $$(
-    [
-      '.xabuia-card-btn',
-      '.xabuia-box',
-      '[id^="xabuia-"]',
-      '[class*="xabuia-"]'
-    ].join(','),
-    card
-  );
-
-  elementosXabuia.forEach((elemento) => {
-    /*
-     * Nunca mexemos no conteúdo do Xabuia.
-     * Apenas desfazemos ocultações acidentais.
-     */
-    elemento.hidden = false;
-    elemento.removeAttribute('aria-hidden');
-
-    if (elemento.style.display === 'none') {
-      elemento.style.removeProperty('display');
-    }
-
-    if (elemento.style.visibility === 'hidden') {
-      elemento.style.removeProperty('visibility');
-    }
-
-    if (elemento.style.opacity === '0') {
-      elemento.style.removeProperty('opacity');
-    }
-  });
-}
+    return !!(
+      element.matches?.('.xabuia-card-btn, .xabuia-box, .comercial-card-btn, .comercial-box') ||
+      element.closest?.('.xabuia-card-btn, .xabuia-box, .comercial-card-btn, .comercial-box') ||
+      String(element.id || '').toLowerCase().startsWith('xabuia-') ||
+      String(element.className || '').toLowerCase().includes('xabuia-')
+    );
+  }
 
   function cleanUnusedIcons(card) {
-  if (!card) return;
+    if (!card) return;
 
-  const seletoresPermitidos = [
-    'a.btn-sla-pausa',
-    'button.btn-copy-resume',
-    'a.btn-transferir',
-    'a.btn-anexo'
-  ];
+    [
+      'a.btn-sla-pausa',
+      'button.btn-copy-resume',
+      'a.btn-transferir',
+      'a.btn-anexo'
+    ].forEach((selector) => {
+      $$(selector, card).forEach((el) => {
+        // O Comercial nunca pode remover ou ocultar elementos do Xabuia.
+        if (isProtectedExternalUi(el)) return;
 
-  seletoresPermitidos.forEach((selector) => {
-    $$(selector, card).forEach((elemento) => {
-      /*
-       * PROTEÇÃO TOTAL:
-       * O Comercial jamais pode ocultar ou remover elementos
-       * pertencentes ao Xabuia ou ao próprio Comercial.
-       */
-      const pertenceAoXabuia =
-        elemento.matches?.('.xabuia-card-btn, .xabuia-box') ||
-        elemento.closest?.(
-          '.xabuia-card-btn, .xabuia-box, #xabuia-overlay, [id^="xabuia-"], [class*="xabuia-"]'
-        );
-
-      const pertenceAoComercial =
-        elemento.matches?.('.comercial-card-btn, .comercial-box') ||
-        elemento.closest?.(
-          '.comercial-card-btn, .comercial-box, #comercial-overlay, [id^="comercial-"], [class*="comercial-"]'
-        );
-
-      if (pertenceAoXabuia || pertenceAoComercial) {
-        return;
-      }
-
-      /*
-       * Não removemos mais o elemento do HTML.
-       * Apenas escondemos o ícone original do Infradesk.
-       *
-       * Isso evita quebrar referências, posições e eventos
-       * usados por outros scripts.
-       */
-      elemento.dataset.comercialOcultado = '1';
-      elemento.style.setProperty('display', 'none', 'important');
+        // Oculta somente o botão nativo do Infradesk, sem removê-lo do DOM.
+        // Isso preserva referências e eventos usados por outros scripts.
+        el.dataset.comercialOcultado = '1';
+        el.style.setProperty('display', 'none', 'important');
+      });
     });
-  });
-
-  protectXabuiaUi(card);
-}
+  }
 
   function addComercialButton(card) {
     if ($('.comercial-card-btn', card)) return;
@@ -2047,36 +1990,24 @@
       openModal(card);
     });
 
-    const xabuiaBtn =
-  $('.xabuia-card-btn', toolbar) ||
-  $('.xabuia-card-btn', card);
+    const xabuiaBtn = $('.xabuia-card-btn', toolbar) || $('.xabuia-card-btn', card);
+    const feedbackBtn = $('a[title="Registrar Interação"]', toolbar) || $('a[title="Registrar Interação"]', card);
+    const anexoBtn =
+      $('a.btn-anexo:not(.xabuia-card-btn):not(.comercial-card-btn)', toolbar) ||
+      $('a.btn-anexo:not(.xabuia-card-btn):not(.comercial-card-btn)', card);
 
-const feedbackBtn =
-  $('a[title="Registrar Interação"]', toolbar) ||
-  $('a[title="Registrar Interação"]', card);
-
-const anexoBtn =
-  $('a.btn-anexo:not(.xabuia-card-btn):not(.comercial-card-btn)', toolbar) ||
-  $('a.btn-anexo:not(.xabuia-card-btn):not(.comercial-card-btn)', card);
-
-/*
- * Ordem obrigatória:
- *
- * [ícone do Xabuia] [ícone Comercial]
- *
- * O botão Comercial nunca substitui, envolve ou remove o Xabuia.
- */
-if (xabuiaBtn?.parentElement) {
-  xabuiaBtn.insertAdjacentElement('afterend', btn);
-} else if (feedbackBtn?.parentElement) {
-  feedbackBtn.insertAdjacentElement('afterend', btn);
-} else if (anexoBtn?.parentElement) {
-  anexoBtn.insertAdjacentElement('beforebegin', btn);
-} else {
-  toolbar.appendChild(btn);
-}
-
-protectXabuiaUi(card);
+    // Ordem preferida: Xabuia primeiro e Comercial logo depois.
+    // Nenhum elemento do Xabuia é movido, substituído ou removido.
+    if (xabuiaBtn?.parentElement) {
+      xabuiaBtn.insertAdjacentElement('afterend', btn);
+    } else if (feedbackBtn?.parentElement) {
+      feedbackBtn.insertAdjacentElement('afterend', btn);
+    } else if (anexoBtn?.parentElement) {
+      anexoBtn.insertAdjacentElement('beforebegin', btn);
+    } else {
+      toolbar.appendChild(btn);
+    }
+  }
 
   function removeComercialUiFromCard(card) {
     if (!card) return;
