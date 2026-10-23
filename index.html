@@ -3,22 +3,25 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Comercial • Divergências NF</title>
-  <link rel="icon" type="image/png" href="./comercial.png?v=8" />
-  <link rel="shortcut icon" type="image/png" href="./comercial.png?v=8" />
-  <link rel="apple-touch-icon" href="./comercial.png?v=8" />
-  <link rel="stylesheet" href="./style.css?v=1.1.7-live-alert" />
+
+  <title>Xabuia</title>
+
+  <link rel="icon" type="image/png" href="./xabuia.png?v=1" />
+  <link rel="shortcut icon" type="image/png" href="./xabuia.png?v=1" />
+  <link rel="apple-touch-icon" href="./xabuia.png?v=1" />
+
+  <link rel="stylesheet" href="./styles.css?v=35.0-teste" />
 </head>
-<body>
+
+<body class="xabuia-v30 xabuia-v35">
   <div id="toast" class="toast hidden"></div>
 
-  <main id="authView" class="auth-shell">
+  <main id="authView" class="auth-shell hidden">
     <section class="auth-card">
-      <div class="brand auth-brand">
-        <img src="./comercial.png" alt="Comercial" class="brand-logo" />
+      <div class="brand">
+        <img class="brand-mark brand-logo" src="./xabuia.png" alt="Xabuia" />
         <div>
-          <h1>Comercial</h1>
-          <p>Divergências comerciais e cadastro</p>
+          <h1>Xabuia</h1>
         </div>
       </div>
 
@@ -29,13 +32,13 @@
 
       <form id="authForm" class="stack">
         <label id="nameField" class="field hidden">
-          <span>Nome</span>
-          <input id="displayNameInput" autocomplete="name" placeholder="Ex.: Elias Araújo" />
+          <span>Nome completo</span>
+          <input id="displayNameInput" autocomplete="name" placeholder="Ex.: Josiscreusa Maria" />
         </label>
 
         <label class="field">
-          <span>E-mail</span>
-          <input id="emailInput" type="email" autocomplete="email" placeholder="seu@email.com" required />
+          <span id="emailFieldLabel">E-mail Xabuia</span>
+          <input id="emailInput" type="email" autocomplete="email" autocapitalize="none" spellcheck="false" placeholder="nome@empresa.com.br" required />
         </label>
 
         <label class="field">
@@ -49,218 +52,454 @@
       <div class="divider"><span>ou</span></div>
 
       <button id="googleBtn" class="btn google" type="button">
-        <strong>G</strong> Entrar/Criar com Google
+        <span class="google-g">G</span> Entrar/Criar com Google
       </button>
 
       <button id="resetPasswordBtn" class="btn link-btn" type="button">Definir ou recuperar senha por e-mail</button>
 
       <div id="connectionHelp" class="notice hidden"></div>
-      <p class="muted center small-text">Conta nova entra como usuário CRF. O admin pode transformar em Compras, Cadastro ou Admin.</p>
+
+      <p id="authHint" class="muted center">Ao criar conta, a organização será escolhida no primeiro acesso.</p>
+    </section>
+  </main>
+
+  <main id="onboardingView" class="auth-shell hidden">
+    <section class="auth-card">
+      <div class="brand">
+        <img class="brand-mark brand-logo" src="./xabuia.png" alt="Xabuia" />
+        <div>
+          <h1>Escolha sua organização</h1>
+          <p>Todo usuário comum vê apenas os chamados da própria organização.</p>
+        </div>
+      </div>
+
+      <form id="onboardingForm" class="stack">
+        <label class="field">
+          <span>Nome completo</span>
+          <input id="onboardingNameInput" autocomplete="name" placeholder="Seu nome" required />
+        </label>
+
+        <label class="field">
+          <span>Organização</span>
+          <select id="onboardingOrgSelect" required></select>
+        </label>
+
+        <button class="btn primary" type="submit">Salvar e continuar</button>
+      </form>
+
+      <p id="onboardingEmpty" class="notice hidden">
+        Nenhuma organização cadastrada ainda. Entre primeiro com <strong>chamadossicofe@gmail.com</strong> para criar as organizações.
+      </p>
+
+      <button id="logoutOnboardingBtn" class="btn ghost" type="button">Sair</button>
     </section>
   </main>
 
   <main id="blockedView" class="auth-shell hidden">
     <section class="auth-card danger-card">
       <h1>Acesso bloqueado</h1>
-      <p>Sua conta está desativada. Fale com o administrador do Comercial.</p>
+      <p>Sua conta foi desativada por um administrador. Entre em contato com o responsável pela sua organização.</p>
       <button id="logoutBlockedBtn" class="btn ghost" type="button">Sair</button>
     </section>
   </main>
 
   <main id="appView" class="app hidden">
-    <header class="topbar card">
+    <header class="topbar">
       <div class="brand inline">
-        <img src="./comercial.png" alt="Comercial" class="brand-logo" />
+        <img class="brand-mark brand-logo" src="./xabuia.png" alt="Xabuia" />
         <div>
-          <h1>Comercial</h1>
+          <h1>Xabuia</h1>
           <p id="userLine">—</p>
         </div>
       </div>
+
       <div class="top-actions">
-        <button id="dashboardBtn" class="btn ghost active" type="button">Fila</button>
-        <button id="reportsBtn" class="btn ghost admin-only hidden" type="button">Relatórios</button>
-        <button id="adminBtn" class="btn ghost admin-only hidden" type="button">Admin</button>
+        <button id="newTicketBtn" class="btn primary" type="button">Novo chamado</button>
+        <button id="adminQueryActiveBtn" class="btn primary hidden" type="button">Consultar por filtros</button>
+        <button id="adminClearQueryBtn" class="btn ghost hidden" type="button">Limpar consulta</button>
+        <button id="adminBtn" class="btn ghost hidden" type="button">Admin</button>
+        <button id="xabuiaSoundBtn" class="btn ghost" type="button">🔊 Ativar som</button>
+        <button id="xabuiaAlertsBtn" class="btn ghost" type="button">🔔 Avisos <strong id="xabuiaUnreadCount">0</strong></button>
         <button id="logoutBtn" class="btn ghost" type="button">Sair</button>
       </div>
     </header>
 
-    <section id="dashboardView">
-      <section class="summary-grid">
-        <article class="metric card"><span>Abertos</span><strong id="countAberto">0</strong></article>
-        <article class="metric card"><span>Reabertos</span><strong id="countReaberto">0</strong></article>
-        <article class="metric card"><span>Em tratamento</span><strong id="countTratamento">0</strong></article>
-        <article class="metric card"><span>Informação divergente</span><strong id="countInfoDivergente">0</strong></article>
-        <article class="metric card"><span>Pedido corrigido</span><strong id="countPedidoCorrigido">0</strong></article>
-        <article class="metric card"><span>Pronto</span><strong id="countPronto">0</strong></article>
-        <article class="metric card"><span>Devolver e recusar</span><strong id="countDevolverRecusar">0</strong></article>
-        <article class="metric card"><span>Total visível</span><strong id="countTotal">0</strong></article>
-      </section>
-
-      <section class="filters card">
-        <label class="field grow">
-          <span>Buscar</span>
-          <input id="searchInput" placeholder="NF, chave, CNPJ, fornecedor, comprador ou chamado" />
-        </label>
-        <label class="field compact">
-          <span>Fila</span>
-          <select id="filaFilter">
-            <option value="todos">Todas</option>
-            <option value="compras">Compras</option>
-            <option value="cadastro">Cadastro</option>
-          </select>
-        </label>
-        <label class="field compact">
-          <span>Status</span>
-          <select id="statusFilter">
-            <option value="ativos" selected>Ativas</option>
-            <option value="todos">Todos</option>
-            <option value="aberto">Aberto</option>
-            <option value="reaberto">Reaberto</option>
-            <option value="em_tratamento">Em tratamento</option>
-            <option value="informacoes_divergentes">Informação divergente</option>
-            <option value="pedido_corrigido">Pedido corrigido</option>
-            <option value="pronto">Pronto</option>
-            <option value="devolver_recusar">Devolver e recusar</option>
-          </select>
-        </label>
-        <label class="field compact">
-          <span>Comprador</span>
-          <select id="compradorFilter"><option value="todos">Todos</option></select>
-        </label>
-        <label class="field compact">
-          <span>Inicial</span>
-          <input id="dateStart" type="date" />
-        </label>
-        <label class="field compact">
-          <span>Final</span>
-          <input id="dateEnd" type="date" />
-        </label>
-      </section>
-
-      <section class="card table-card">
+    <dialog id="xabuiaAlertsDialog" class="modal">
+      <div class="modal-card">
         <div class="section-head">
-          <div>
-            <h2>Fila de divergências</h2>
-            <p id="liveStatus" class="muted">Carregando chamados...</p>
-          </div>
-          <div class="live-actions">
-            <button id="alertSoundToggle" class="alert-sound-toggle sound-off" type="button" title="Liga ou desliga o som de alerta de novo chamado">🔕 Som desligado</button>
-            <button id="refreshBtn" class="btn ghost small" type="button">Reconectar ao vivo</button>
-          </div>
+          <h2>🔔 Avisos do Xabuia</h2>
+          <button type="button" class="icon-btn" data-close-dialog="xabuiaAlertsDialog">×</button>
         </div>
-        <div class="table-wrap">
-          <table class="tickets-table">
-            <thead>
-              <tr>
-                <th>Status</th>
-                <th>Reserva</th>
-                <th>NF / CNPJ</th>
-                <th>Fornecedor</th>
-                <th>Divergência</th>
-                <th>Comprador</th>
-                <th>Aberto por</th>
-                <th>Tempo</th>
-                <th>Ações</th>
-              </tr>
-            </thead>
-            <tbody id="ticketTableBody"></tbody>
-          </table>
-        </div>
-      </section>
+        <p class="muted">Retornos dos seus chamados e, para operadores, novas solicitações e chamados atribuídos. O som blin.mp3 exige ativação pelo navegador.</p>
+        <div id="xabuiaAlertsList" class="xabuia-alerts-list"></div>
+      </div>
+    </dialog>
+
+    <section class="summary-grid">
+      <article class="metric card"><span>Abertos</span><strong id="countAberto">0</strong></article>
+      <article class="metric card"><span>Reabertos</span><strong id="countReaberto">0</strong></article>
+      <article class="metric card"><span>Em tratamento</span><strong id="countTratamento">0</strong></article>
+      <article class="metric card"><span>Informações divergentes</span><strong id="countInformacoesDivergentes">0</strong></article>
+      <article class="metric card"><span>Devolver e recusar</span><strong id="countDevolverRecusar">0</strong></article>
+      <article class="metric card"><span>Finalizados</span><strong id="countFinalizado">0</strong></article>
+      <article class="metric card"><span>Total visível</span><strong id="countTotal">0</strong></article>
     </section>
 
-    <section id="reportsView" class="hidden">
-      <section class="card reports-card">
-        <div class="section-head">
-          <div>
-            <h2>Relatórios do Comercial</h2>
-            <p class="muted">Gráficos por período. Por padrão, somente hoje.</p>
+    <section class="toolbar card toolbar-v12">
+      <div class="field grow search-field">
+        <span>Buscar</span>
+        <input id="searchInput" placeholder="Chave, nota, CNPJ, produto ou formulário" />
+      </div>
+
+      <div class="field compact dropdown-field">
+        <span>Formulários</span>
+        <details
+          id="ticketTypeFilter"
+          class="multi-dropdown"
+          data-all-value="todos"
+          data-label-all="Todos"
+          data-label-singular="formulário"
+          data-label-plural="formulários"
+        >
+          <summary><span class="multi-dropdown-label">Todos</span></summary>
+          <div class="multi-dropdown-menu" aria-label="Filtrar por formulário">
+            <label><input type="checkbox" value="todos" data-filter-option checked /> Todos</label>
+            <label><input type="checkbox" value="nf_caminhao_porta" data-filter-option /> NF • Caminhão na porta</label>
+            <label><input type="checkbox" value="nf_adiantamento" data-filter-option /> NF • Adiantamento</label>
+            <label><input type="checkbox" value="reativacao_produtos" data-filter-option /> Reativação de produtos</label>
+            <label><input type="checkbox" value="novos_produtos" data-filter-option /> Novos produtos</label>
+            <label><input type="checkbox" value="pedido_em_andamento" data-filter-option /> Pedido em andamento</label>
+            <label><input type="checkbox" value="divergencia_flow" data-filter-option /> Divergência no Flow</label>
           </div>
-          <button id="generateReportsBtn" class="btn primary" type="button">Gerar relatório</button>
-        </div>
-        <div class="report-filters">
-          <label class="field compact"><span>Inicial</span><input id="reportStart" type="date" /></label>
-          <label class="field compact"><span>Final</span><input id="reportEnd" type="date" /></label>
-          <label class="field compact"><span>Fila</span><select id="reportFila"><option value="todos">Todas</option><option value="compras">Compras</option><option value="cadastro">Cadastro</option></select></label>
-        </div>
-      </section>
-      <section id="reportsOutput" class="report-grid"></section>
+        </details>
+      </div>
+
+      <label class="field compact">
+        <span>Status</span>
+        <select id="statusFilter">
+          <option value="ativos" selected>Ativos: aberto, reaberto e em tratamento</option>
+          <option value="todos">Todos</option>
+          <option value="aberto">Aberto</option>
+          <option value="reaberto">Reaberto</option>
+          <option value="em_tratamento">Em tratamento</option>
+          <option value="informacoes_divergentes">Informações divergentes</option>
+          <option value="devolver_recusar">Devolver e recusar</option>
+          <option value="finalizado">Finalizado</option>
+        </select>
+      </label>
+
+      <label class="field compact">
+        <span>Abertura inicial</span>
+        <input id="mainDateStart" type="date" />
+      </label>
+
+      <label class="field compact">
+        <span>Abertura final</span>
+        <input id="mainDateEnd" type="date" />
+      </label>
+
+      <div id="orgFilterWrap" class="field compact dropdown-field hidden">
+        <span>Organizações</span>
+        <details
+          id="orgFilter"
+          class="multi-dropdown"
+          data-all-value="todas"
+          data-label-all="Todas"
+          data-label-singular="organização"
+          data-label-plural="organizações"
+        >
+          <summary><span class="multi-dropdown-label">Todas</span></summary>
+          <div class="multi-dropdown-menu" aria-label="Filtrar por organização">
+            <label><input type="checkbox" value="todas" data-filter-option checked /> Todas</label>
+          </div>
+        </details>
+      </div>
     </section>
 
-    <section id="adminView" class="hidden">
-      <section class="admin-grid">
-        <article class="card admin-card">
-          <div class="section-head"><h2>Tipos de divergência</h2></div>
-          <div class="row-form">
-            <select id="adminTipoFila">
-              <option value="compras">Compras</option>
-              <option value="cadastro">Cadastro</option>
-            </select>
-            <input id="adminTipoNome" placeholder="Novo tipo de divergência" />
-            <button id="addTipoBtn" class="btn primary" type="button">+</button>
-          </div>
-          <div id="tiposList" class="mini-list"></div>
-        </article>
 
-        <article class="card admin-card">
-          <div class="section-head"><h2>Compradores</h2></div>
-          <div class="row-form two">
-            <input id="buyerNameInput" placeholder="Nome do comprador" />
-            <button id="addBuyerBtn" class="btn primary" type="button">+</button>
-          </div>
-          <div id="buyersList" class="mini-list"></div>
-        </article>
 
-        <article class="card admin-card wide-admin-card">
-          <div class="section-head">
-            <div>
-              <h2>Usuários</h2>
-              <p class="muted">O usuário aparece aqui depois do primeiro login. Depois o admin define o papel.</p>
-            </div>
-          </div>
-          <div id="usersList" class="users-list"></div>
-        </article>
-      </section>
+    <section class="card table-card xabuia-queue-panel">
+      <div class="section-head xabuia-table-heading">
+        <div>
+          <h2>Fila de chamados</h2>
+          <p class="muted">Ordem de abertura • mais antigos primeiro • reserva sem trocar de posição</p>
+        </div>
+        <span id="liveStatus" class="pill">Carregando...</span>
+      </div>
+      <div class="xabuia-table-wrap" role="region" aria-label="Fila de chamados" tabindex="0">
+        <table class="xabuia-tickets-table">
+          <thead><tr>
+            <th>Status</th><th>Reserva</th><th>Chamado / referência</th>
+            <th>Formulário</th><th>Organização</th><th>Solicitante</th>
+            <th>Abertura / tempo</th><th>Ações</th>
+          </tr></thead>
+          <tbody id="ticketList" aria-live="polite"></tbody>
+        </table>
+      </div>
     </section>
   </main>
 
-  <dialog id="ticketDialog" class="modal wide">
-    <div class="modal-card">
-      <div class="section-head modal-head">
-        <div>
-          <h2 id="detailTitle">Divergência</h2>
-          <p id="detailSub" class="muted">—</p>
+
+
+  <dialog id="ticketDetailDialog" class="modal wide xabuia-detail-dialog" aria-labelledby="detailModalTitle">
+    <div class="xabuia-detail-shell">
+      <div class="xabuia-detail-modal-head">
+        <div class="xabuia-detail-modal-label"><strong id="detailModalTitle">Detalhes do chamado</strong><span id="detailLiveStatus"></span></div>
+        <button type="button" class="icon-btn" data-close-dialog="ticketDetailDialog" aria-label="Fechar detalhes">×</button>
+      </div>
+      <div id="ticketDetail" class="card detail-card detail-card-v30 empty">
+        <h2>Selecione um chamado</h2>
+      </div>
+    </div>
+  </dialog>
+
+  <template id="ticketDetailVisualModel">
+    <article class="detail-summary-card detail-summary-v30 ticket-framed">
+      <div class="ticket-type-legend" data-slot="tipoChamado">Nota fiscal • Caminhão na porta</div>
+
+      <div class="detail-summary-grid">
+        <div class="detail-summary-main">
+          <div class="nf-facts-grid">
+            <span><strong>NF</strong> <span data-slot="numeroNota">4548218</span></span>
+            <span><strong>CNPJ</strong> <span data-slot="cnpj">03630560000118</span></span>
+            <span><strong>Série</strong> <span data-slot="serie">001</span></span>
+            <span><strong>Modelo</strong> <span data-slot="modelo">55</span></span>
+          </div>
+
+          <div class="full-key-block">
+            <strong>Chave:</strong>
+            <span data-slot="chaveCompleta">35260603630560000118550010045482181778674606</span>
+          </div>
         </div>
-        <button class="icon-btn" type="button" data-close-dialog="ticketDialog">×</button>
+
+        <div class="opening-occurrence-card">
+          <strong>Ocorrência inicial</strong>
+          <small data-slot="aberturaMeta">Elias Araújo • 30/06/2026, 22:30</small>
+          <div class="opening-occurrence-text" data-slot="textoAbertura">teste</div>
+        </div>
+      </div>
+    </article>
+  </template>
+
+  <dialog id="ticketTypeDialog" class="modal wide">
+    <div class="modal-card">
+      <div class="section-head">
+        <h2>Novo chamado</h2>
+        <button class="icon-btn" type="button" data-close-dialog="ticketTypeDialog">×</button>
       </div>
 
-      <div id="detailFacts" class="detail-facts"></div>
+      <p class="muted">Escolha o formulário. A tratativa é a mesma, mas os relatórios e filtros separam cada tipo.</p>
 
-      <div class="detail-grid">
-        <section>
-          <h3>Linha do tempo</h3>
-          <div id="historyList" class="history-list"></div>
+      <div class="ticket-type-sections">
+        <section class="ticket-type-section">
+          <h3>Notas fiscais</h3>
+          <div class="ticket-type-grid">
+            <button id="chooseInvoiceTruckBtn" class="ticket-type-card priority" type="button" data-ticket-type="nf_caminhao_porta">
+              <strong>Caminhão na porta</strong>
+              <span>Prioridade maior: nota realmente chegando/aguardando recebimento.</span>
+            </button>
+
+            <button id="chooseInvoiceAdvanceBtn" class="ticket-type-card" type="button" data-ticket-type="nf_adiantamento">
+              <strong>Adiantamento</strong>
+              <span>Antecipação de análise para o operador se preparar.</span>
+            </button>
+          </div>
         </section>
 
-        <section class="response-card">
-          <h3>Responder chamado</h3>
-          <label class="field">
-            <span>Status</span>
-            <select id="detailStatus"></select>
-          </label>
-          <label class="field">
-            <span>Resposta</span>
-            <textarea id="responseText" placeholder="Digite a tratativa, retorno ao CRF, orientação ou conclusão..."></textarea>
-          </label>
-          <div class="modal-actions">
-            <button id="reserveFromModalBtn" class="btn ghost" type="button">Reservar</button>
-            <button id="saveResponseBtn" class="btn primary" type="button">Salvar resposta</button>
+        <section class="ticket-type-section">
+          <h3>Produtos</h3>
+          <div class="ticket-type-grid four">
+            <button id="chooseProductReactivationBtn" class="ticket-type-card" type="button" data-ticket-type="reativacao_produtos">
+              <strong>Reativação de produtos</strong>
+              <span>Código do produto, observação e print.</span>
+            </button>
+
+            <button id="chooseNewProductBtn" class="ticket-type-card" type="button" data-ticket-type="novos_produtos">
+              <strong>Novos produtos</strong>
+              <span>Código do produto, observação e print.</span>
+            </button>
+
+            <button id="choosePedidoAndamentoBtn" class="ticket-type-card" type="button" data-ticket-type="pedido_em_andamento">
+              <strong>Pedido em andamento</strong>
+              <span>Código do produto, observação e print.</span>
+            </button>
+
+            <button id="chooseDivergenciaFlowBtn" class="ticket-type-card" type="button" data-ticket-type="divergencia_flow">
+              <strong>Divergência no Flow</strong>
+              <span>Código do produto, observação e print.</span>
+            </button>
           </div>
+        </section>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn ghost" type="button" data-close-dialog="ticketTypeDialog">Cancelar</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="ticketDialog" class="modal">
+    <form id="ticketForm" method="dialog" class="modal-card">
+      <div class="section-head">
+        <h2 id="ticketDialogTitle">Novo chamado • Nota fiscal</h2>
+        <button class="icon-btn" value="cancel" type="button" data-close-dialog="ticketDialog">×</button>
+      </div>
+
+      <input id="ticketTypeInput" type="hidden" value="nf_caminhao_porta" />
+
+      <label class="field">
+        <span>Chave de acesso da NF-e</span>
+        <input id="ticketKeyInput" required inputmode="numeric" autocomplete="off" maxlength="80" placeholder="Cole a chave de acesso com 44 números" aria-describedby="ticketKeyHelp" />
+        <small id="ticketKeyHelp" class="field-help">Pode colar com espaços, pontos ou caracteres especiais. O sistema vai limpar e manter apenas números.</small>
+        <small id="ticketKeyError" class="field-error hidden">Chave de acesso inválida. Informe exatamente 44 números.</small>
+      </label>
+
+      <div id="ticketKeyPreview" class="key-preview hidden">
+        <span>Chave limpa:</span>
+        <strong id="ticketKeyCleanText">—</strong>
+      </div>
+
+      <label id="ticketOrgWrap" class="field hidden">
+        <span>Organização</span>
+        <select id="ticketOrgSelect"></select>
+      </label>
+
+      <label class="field">
+        <span>Observação inicial</span>
+        <textarea id="ticketObsInput" rows="5" required placeholder="Descreva a ocorrência inicial"></textarea>
+      </label>
+
+      <div class="field">
+        <span>Anexo</span>
+        <input id="ticketFileInput" class="hidden-file" type="file" accept="image/*,.pdf,.txt,.csv,.xml,.xlsx,.xls" />
+        <div id="ticketPasteZone" class="paste-zone" tabindex="0" role="button" aria-label="Adicionar anexo">
+          <div class="paste-empty">
+            <strong>Cole uma imagem aqui com Ctrl+V</strong>
+            <small>Também pode clicar para escolher arquivo ou arrastar uma imagem para esta área.</small>
+          </div>
+          <div id="ticketPastePreview" class="paste-preview hidden"></div>
+        </div>
+        <button id="clearTicketFileBtn" class="btn ghost hidden" type="button">Remover anexo</button>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn ghost" value="cancel" type="button" data-close-dialog="ticketDialog">Cancelar</button>
+        <button id="saveTicketBtn" class="btn primary" type="submit">Salvar chamado</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="productTicketDialog" class="modal">
+    <form id="productTicketForm" method="dialog" class="modal-card">
+      <div class="section-head">
+        <h2 id="productDialogTitle">Novo chamado • Produto</h2>
+        <button class="icon-btn" value="cancel" type="button" data-close-dialog="productTicketDialog">×</button>
+      </div>
+
+      <input id="productTypeInput" type="hidden" value="reativacao_produtos" />
+
+      <label class="field">
+        <span>Código do produto</span>
+        <input id="productCodeInput" required autocomplete="off" placeholder="Ex.: 10012515" />
+      </label>
+
+      <label id="productOrgWrap" class="field hidden">
+        <span>Organização</span>
+        <select id="productOrgSelect"></select>
+      </label>
+
+      <label class="field">
+        <span>Observação inicial</span>
+        <textarea id="productObsInput" rows="6" required placeholder="Descreva a solicitação. Pode colar linhas do Excel aqui."></textarea>
+        <small class="field-help">Se você copiar uma tabela do Excel e colar aqui, o histórico vai mostrar como tabelinha.</small>
+      </label>
+
+      <div id="productObsPreview" class="excel-preview hidden"></div>
+
+      <div class="field">
+        <span>Print ou anexo</span>
+        <input id="productFileInput" class="hidden-file" type="file" accept="image/*,.pdf,.txt,.csv,.xml,.xlsx,.xls" />
+        <div id="productPasteZone" class="paste-zone" tabindex="0" role="button" aria-label="Adicionar anexo">
+          <div class="paste-empty">
+            <strong>Cole uma imagem aqui com Ctrl+V</strong>
+            <small>Também pode clicar para escolher arquivo ou arrastar uma imagem para esta área.</small>
+          </div>
+          <div id="productPastePreview" class="paste-preview hidden"></div>
+        </div>
+        <button id="clearProductFileBtn" class="btn ghost hidden" type="button">Remover anexo</button>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn ghost" value="cancel" type="button" data-close-dialog="productTicketDialog">Cancelar</button>
+        <button id="saveProductTicketBtn" class="btn primary" type="submit">Salvar chamado</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="adminDialog" class="modal wide">
+    <div class="modal-card">
+      <div class="section-head">
+        <h2>Administração</h2>
+        <button class="icon-btn" type="button" data-close-dialog="adminDialog">×</button>
+      </div>
+
+      <div class="admin-grid">
+        <section>
+          <h3>Organizações</h3>
+          <form id="orgForm" class="row-form">
+            <input id="orgNameInput" placeholder="Nova organização" required />
+            <button class="btn primary" type="submit">Criar</button>
+          </form>
+          <div id="orgAdminList" class="mini-list"></div>
+        </section>
+
+        <section>
+          <h3>Usuários</h3>
+          <div id="usersAdminList" class="mini-list"></div>
+        </section>
+
+        <section class="report-section">
+          <h3>Relatório dos operadores</h3>
+          <p class="muted">Veja quantos chamados cada operador colocou em tratamento, finalizou, reabriu, marcou como divergente ou marcou como devolvido/recusado no intervalo informado.</p>
+          <div class="report-filters">
+            <label class="field">
+              <span>Data inicial</span>
+              <input id="operatorReportStart" type="date" />
+            </label>
+            <label class="field">
+              <span>Data final</span>
+              <input id="operatorReportEnd" type="date" />
+            </label>
+            <button id="operatorReportBtn" class="btn primary" type="button">Gerar relatório</button>
+          </div>
+          <div id="operatorReportBox" class="report-box empty-state">Informe o período e clique em Gerar relatório.</div>
+        </section>
+
+        <section class="report-section sla-section">
+          <h3>Alertas de tempo dos chamados ativos</h3>
+          <p class="muted">Configure quantos minutos cada status pode ficar parado. A configuração fica salva no navegador do admin e não consome Firestore.</p>
+          <div class="report-filters sla-filters">
+            <label class="field">
+              <span>Aberto acima de</span>
+              <input id="slaAbertoMin" type="number" min="1" step="1" placeholder="30" />
+            </label>
+            <label class="field">
+              <span>Reaberto acima de</span>
+              <input id="slaReabertoMin" type="number" min="1" step="1" placeholder="30" />
+            </label>
+            <label class="field">
+              <span>Em tratamento acima de</span>
+              <input id="slaTratamentoMin" type="number" min="1" step="1" placeholder="60" />
+            </label>
+            <button id="adminSlaQueryBtn" class="btn primary" type="button">Consultar SLA</button>
+          </div>
+          <div id="adminSlaReportBox" class="report-box empty-state">Informe os minutos e clique em Consultar SLA.</div>
         </section>
       </div>
     </div>
   </dialog>
 
-  <script type="module" src="./script.js?v=1.1.7-live-alert"></script>
+  <script type="module" src="./app.js?v=35.0-teste"></script>
+  <script src="./xabuia-title-alertas.js"></script>
 </body>
 </html>
