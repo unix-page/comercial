@@ -1,0 +1,73 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signed() { return request.auth != null; }
+    function userPath() { return /databases/$(database)/documents/usuarios/$(request.auth.uid); }
+    function hasProfile() { return signed() && exists(userPath()); }
+    function profile() { return get(userPath()).data; }
+    // Compatibilidade com perfis 'usuarios' já existentes: ativo ausente = ativo.
+    function active() { return hasProfile() && profile().get('ativo', true) == true; }
+    function admin() { return active() && profile().get('papel', '') == 'admin'; }
+    function crf() { return active() && profile().get('papel', '') in ['admin', 'usuario', 'crf']; }
+    function validKey(k) { return k.matches('^[0-9]{44}$'); }
+    function validCnpj(c) { return c.matches('^[0-9]{14}$'); }
+
+    // NÃO recriar usuários via seed ou script: manter os documentos existentes.
+    match /usuarios/{uid} {
+      allow get: if signed() && (request.auth.uid == uid || admin());
+      allow list, create, update, delete: if admin();
+    }
+    match /compradores_v2/{id} {
+      allow read: if active();
+      allow create, update: if admin();
+      allow delete: if false; // usar ativo:false para manter auditoria
+    }
+    match /fornecedores_v2/{cnpj} {
+      allow read: if active();
+      allow create: if admin() || (
+        crf() && validCnpj(cnpj) && request.resource.data.cnpj == cnpj &&
+        request.resource.data.origemRazaoSocial == 'infradesk' &&
+        request.resource.data.compradorIds is list && request.resource.data.compradorIds.size() == 0 &&
+        request.resource.data.ativo == true
+      );
+      allow update: if admin();
+      allow delete: if false;
+    }
+    match /tipos_divergencia_v2/{id} {
+      allow read: if active();
+      allow create, update: if admin();
+      allow delete: if false;
+    }
+    match /notas_v2/{chave} {
+      allow read: if active();
+      allow create: if crf() && validKey(chave) && request.resource.data.chave == chave;
+      allow update: if crf() && resource.data.chave == chave && request.resource.data.chave == chave;
+      allow delete: if false;
+    }
+    match /divergencias_v2/{id} {
+      allow read: if active();
+      allow create: if crf() && validKey(request.resource.data.chave) &&
+        request.resource.data.abertoPor == request.auth.uid;
+      allow update: if crf() && request.resource.data.chave == resource.data.chave &&
+        request.resource.data.abertoPor == resource.data.abertoPor &&
+        request.resource.data.criadoEm == resource.data.criadoEm;
+      allow delete: if false;
+    }
+    match /eventos_v2/{id} {
+      allow read: if active();
+      allow create: if crf() && validKey(request.resource.data.chave) &&
+        request.resource.data.usuarioId == request.auth.uid;
+      allow update, delete: if false; // trilha de auditoria imutável
+    }
+    match /passagens_v2/{id} {
+      allow read: if active();
+      allow create: if crf() && validKey(request.resource.data.chave) &&
+        request.resource.data.criadoPor == request.auth.uid && request.resource.data.fimEm == null;
+      allow update: if crf() && resource.data.fimEm == null &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fimEm', 'fechadoPor', 'fechamento']) &&
+        request.resource.data.fimEm is timestamp;
+      allow delete: if false;
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}
