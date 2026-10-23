@@ -1,1 +1,0 @@
-xabuia-acelerato.js
