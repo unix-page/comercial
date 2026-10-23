@@ -28,7 +28,6 @@ import {
   where,
   orderBy,
   onSnapshot,
-  runTransaction,
   limit
 } from 'https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js';
 import {
@@ -47,7 +46,7 @@ const firebaseConfig = {
   appId: '1:81395419196:web:8322d61652f6240b49db39'
 };
 
-const APP_VERSION = 'V35-comercial-fila-cronologica-TESTE';
+const APP_VERSION = 'V34-email-blin-alertas';
 const BOOTSTRAP_ADMIN_EMAIL = 'chamadossicofe@gmail.com';
 
 const TICKET_TYPE_LABELS = {
@@ -271,11 +270,9 @@ const state = {
   pendingProductFile: null,
   pendingProductFiles: [],
   ticketBuckets: {},
-  optimisticReservations: new Map(),
   unsubTickets: null,
   unsubOrgs: null,
   unsubUsers: null,
-  unsubProfile: null,
   searchTimer: null,
   searchToken: 0,
   filterTimer: null,
@@ -634,11 +631,16 @@ function queueTimestamp(ticket) {
 }
 
 function sortTicketsForDisplay(tickets) {
-  // Abertura original é a única prioridade. Reservas e reaberturas nunca reordenam.
   return [...tickets].sort((a, b) => {
-    const aTime = timestampMillis(a.criadoEm) || timestampMillis(a.atualizadoEm) || 0;
-    const bTime = timestampMillis(b.criadoEm) || timestampMillis(b.atualizadoEm) || 0;
-    return aTime - bTime || String(a.id || '').localeCompare(String(b.id || ''));
+    const statusDiff = ticketDisplayStatusPriority(a.status) - ticketDisplayStatusPriority(b.status);
+    if (statusDiff !== 0) return statusDiff;
+
+    // Fila de atendimento: dentro do mesmo status, o mais antigo fica em cima.
+    // Assim os chamados mais novos descem para a parte de baixo da fila.
+    const queueDiff = queueTimestamp(a) - queueTimestamp(b);
+    if (queueDiff !== 0) return queueDiff;
+
+    return String(ticketTitle(a)).localeCompare(String(ticketTitle(b)), 'pt-BR');
   });
 }
 
@@ -1385,7 +1387,6 @@ function stopTicketsListener() {
   }
   state.unsubTickets = null;
   state.ticketBuckets = {};
-  state.optimisticReservations.clear();
 }
 
 function mergeTicketBuckets() {
@@ -1394,26 +1395,7 @@ function mergeTicketBuckets() {
     Object.values(state.ticketBuckets).flat().forEach((ticket) => {
       if (ticket?.id) byId.set(ticket.id, ticket);
     });
-    // A remoção do listener dos "livres" pode chegar antes da inclusão em "meus atribuídos".
-    // Mantém a linha do próprio operador sem consultas ou writes extras.
-    const now = Date.now();
-    for (const [id, entry] of state.optimisticReservations) {
-      const live = byId.get(id);
-      if (live?.status === 'em_tratamento' && live.operadorTratamentoId === state.user?.uid) {
-        state.optimisticReservations.delete(id);
-        continue;
-      }
-      if (live && CLOSED_STATUSES.includes(live.status)) {
-        state.optimisticReservations.delete(id);
-        continue;
-      }
-      if (now > entry.until || state.user?.uid !== entry.ticket.operadorTratamentoId) {
-        state.optimisticReservations.delete(id);
-        continue;
-      }
-      byId.set(id, entry.ticket);
-    }
-    state.tickets = [...byId.values()];
+    state.tickets = [...byId.values()].sort((a, b) => timestampMillis(b.atualizadoEm) - timestampMillis(a.atualizadoEm));
     renderTickets();
     setText(els.liveStatus, 'Ao vivo');
   } catch (error) {
@@ -1422,6 +1404,7 @@ function mergeTicketBuckets() {
     showToast(`Erro ao mostrar chamados: ${error.message}`, 'error');
   }
 }
+
 
 function noticeStoreKey() { return `xabuia_avisos_v33_${state.user?.uid || 'anon'}`; }
 function soundPrefKey() { return `xabuia_som_v33_${state.user?.uid || 'anon'}`; }
@@ -1980,10 +1963,6 @@ function filteredTickets() {
     if (status === 'ativos' && !ACTIVE_STATUSES.includes(ticketStatus)) return false;
     if (status !== 'todos' && status !== 'ativos' && ticketStatus !== status) return false;
 
-    // Operadores só acompanham os próprios tratamentos na fila operacional.
-    // Evita que consultas de busca/filtros tragam reservas de outras pessoas.
-    if (isOperator() && ticketStatus === 'em_tratamento' && ticket.operadorTratamentoId !== state.user?.uid) return false;
-
     if (!allTypes && !typeValues.includes(ticketTipo)) return false;
 
     if (isOperatorOrAdmin() && !allOrgs && !orgValues.includes(ticket.organizacaoId)) {
@@ -2019,30 +1998,6 @@ function filteredTickets() {
 
 
 
-function ticketTableRowHtml(ticket) {
-  const status = ticket.status || 'aberto';
-  const unread = state.notifications.some((n) => n.ticketId === ticket.id && !n.lida);
-  const reservedByMe = status === 'em_tratamento' && ticket.operadorTratamentoId === state.user?.uid;
-  const reserveText = status === 'em_tratamento'
-    ? `<strong>${escapeHtml(ticket.operadorTratamentoNome || 'Em tratamento')}</strong><small class="muted">${reservedByMe ? 'Reservado por você' : 'Responsável'}</small>`
-    : `<span class="muted">—</span><small class="muted">Disponível</small>`;
-  const title = escapeHtml(ticketTitle(ticket));
-  const reference = escapeHtml(ticketRawLine(ticket));
-  return `
-    <td><span class="table-status-cell">${statusBadge(status)}</span></td>
-    <td class="table-reserve">${reserveText}</td>
-    <td><strong class="table-main">${title}</strong><small class="table-kicker" title="${reference}">${reference}</small></td>
-    <td><strong class="table-type">${escapeHtml(ticketTypeLabel(ticket.tipoChamado || 'nota_fiscal'))}</strong></td>
-    <td>${orgChipHtml(ticket.organizacaoNome)}</td>
-    <td><strong class="table-person">${escapeHtml(ticket.criadoPorNome || ticket.criadoPorEmail || '—')}</strong></td>
-    <td><span class="table-date">${escapeHtml(formatDate(ticket.criadoEm))}</span><small class="table-kicker">${escapeHtml(ticketQueueLabel(ticket))}</small></td>
-    <td class="table-actions">
-      ${reserveButtonHtml(ticket)}
-      <button class="btn ghost table-open-btn" type="button" data-open-ticket-id="${escapeHtml(ticket.id)}">Abrir</button>
-    </td>
-  `;
-}
-
 function renderTickets() {
   const tickets = filteredTickets();
   const counts = tickets.reduce((acc, ticket) => {
@@ -2059,73 +2014,62 @@ function renderTickets() {
   setText(els.countTotal, tickets.length);
   updateBrowserTitleAlert();
 
-  const body = els.ticketList;
-  if (!body) return;
-
   if (!tickets.length) {
-    body.innerHTML = '<tr class="empty-table-row"><td colspan="8">Nenhum chamado encontrado para os filtros selecionados.</td></tr>';
-  } else {
-    body.querySelector('.empty-table-row')?.remove();
-    const wanted = new Set(tickets.map((ticket) => ticket.id));
-    body.querySelectorAll('tr[data-ticket-id]').forEach((row) => {
-      if (!wanted.has(row.dataset.ticketId)) row.remove();
-    });
-    // Mantém o mesmo elemento <tr> para mudanças de status; apenas conteúdo mutável é atualizado.
-    const byId = new Map([...body.querySelectorAll('tr[data-ticket-id]')].map((row) => [row.dataset.ticketId, row]));
-    tickets.forEach((ticket, i) => {
-      let row = byId.get(ticket.id);
-      const isNew = !row;
-      if (isNew) {
-        row = document.createElement('tr');
-        row.dataset.ticketId = ticket.id;
-        row.tabIndex = 0;
-      }
-      const selected = ticket.id === state.selectedTicketId;
-      const unread = state.notifications.some((n) => n.ticketId === ticket.id && !n.lida);
-      row.className = `xabuia-table-row ${selected ? 'selected' : ''} ${unread ? 'xabuia-unread-ticket' : ''}`;
-      const signature = JSON.stringify([
-        ticket.status, ticket.tipoChamado, ticket.chave, ticket.codigoProduto,
-        ticket.organizacaoNome, ticket.criadoPorNome, ticket.criadoPorEmail,
-        ticket.operadorTratamentoId, ticket.operadorTratamentoNome,
-        timestampMillis(ticket.criadoEm), timestampMillis(ticket.atualizadoEm),
-        timestampMillis(ticket.reabertoEm), timestampMillis(ticket.tratamentoIniciadoEm), unread
-      ]);
-      if (isNew || row.dataset.signature !== signature) {
-        row.innerHTML = ticketTableRowHtml(ticket);
-        row.dataset.signature = signature;
-      }
-      if (body.children[i] !== row) body.insertBefore(row, body.children[i] || null);
-    });
+    els.ticketList.innerHTML = '<div class="empty-state">Nenhum chamado encontrado.</div>';
+    if (state.selectedTicketId && !state.tickets.some((t) => t.id === state.selectedTicketId)) {
+      state.selectedTicketId = null;
+      renderTicketDetail(null);
+    }
+    return;
   }
 
-  const selected = state.tickets.find((t) => t.id === state.selectedTicketId);
-  const detailDialog = $('ticketDetailDialog');
-  if (detailDialog?.open && selected) {
-    const liveStatus = $('detailLiveStatus');
-    if (liveStatus) liveStatus.innerHTML = statusBadge(selected.status);
-    // Não reconstruir o painel: preserva a resposta que o operador está digitando.
-  }
-  if (state.selectedTicketId && !selected) {
+  els.ticketList.innerHTML = tickets.map((ticket) => {
+    const tipo = ticket.tipoChamado || 'nota_fiscal';
+    const status = ticket.status || 'aberto';
+    return `
+      <article class="ticket-item ticket-item-v30 ticket-framed ticket-status-${escapeHtml(status)} ${ticket.id === state.selectedTicketId ? 'active' : ''} ${state.notifications.some((n) => n.ticketId === ticket.id && !n.lida) ? 'xabuia-unread-ticket' : ''}" data-ticket-id="${escapeHtml(ticket.id)}" role="button" tabindex="0">
+        <div class="ticket-type-legend">${escapeHtml(ticketTypeLabel(tipo))}</div>
+
+        <div class="ticket-card-head-v30">
+		  <div class="ticket-card-main-v30">
+			<strong class="ticket-card-title-v30">${ticketCardTitleHtml(ticket)}</strong>
+		  </div>
+
+		  <div class="ticket-status-stack">
+			${statusBadge(status)}
+			${reserveButtonHtml(ticket)}
+		  </div>
+		</div>
+
+        <div class="ticket-access-key-v30" title="${escapeHtml(fullAccessKey(ticket))}">
+          ${ticketFullReferenceHtml(ticket)}
+        </div>
+
+        <div class="ticket-card-footer-v30">
+          ${orgChipHtml(ticket.organizacaoNome)}
+          <span>Solicitante: <strong>${escapeHtml(ticket.criadoPorNome || ticket.criadoPorEmail || '—')}</strong></span>
+          ${ticketTreatingHtml(ticket)}
+          <span class="queue-age">${escapeHtml(ticketQueueLabel(ticket))}</span>
+        </div>
+      </article>
+    `;
+  }).join('');
+
+  if (state.selectedTicketId && !state.tickets.some((t) => t.id === state.selectedTicketId)) {
     state.selectedTicketId = null;
     state.historyLoadedFor = null;
-    if (detailDialog?.open) detailDialog.close();
+    renderTicketDetail(null);
   }
 }
 
 async function selectTicket(ticketId) {
-  const ticket = state.tickets.find((t) => t.id === ticketId);
-  if (!ticket) return showToast('Chamado não está disponível na lista atual.', 'error');
   state.selectedTicketId = ticketId;
   state.historyLoadedFor = null;
+  const ticket = state.tickets.find((t) => t.id === ticketId);
   renderTickets();
-  const dialog = $('ticketDetailDialog');
-  if (dialog && !dialog.open) dialog.showModal();
-  const title = $('detailModalTitle');
-  if (title) title.textContent = ticketTitle(ticket);
-  const statusBox = $('detailLiveStatus');
-  if (statusBox) statusBox.innerHTML = statusBadge(ticket.status);
   await renderTicketDetail(ticket);
 }
+
 
 
 async function renderTicketDetail(ticket) {
@@ -2649,39 +2593,16 @@ async function addHistory(ticket) {
       ...(anexo ? { anexo } : {})
     };
 
-    let previousForEvents = ticket;
-    if (statusChanged) {
-      await runTransaction(db, async (transaction) => {
-        const snap = await transaction.get(ticketRef);
-        if (!snap.exists()) throw new Error('Chamado não encontrado.');
-        const current = { id: snap.id, ...snap.data() };
-        const serverStatus = current.status || 'aberto';
-        if (serverStatus !== currentStatus) {
-          throw new Error('O status mudou em outra sessão. Feche e abra o chamado novamente.');
-        }
-        if (serverStatus === 'em_tratamento' && current.operadorTratamentoId &&
-            current.operadorTratamentoId !== state.user?.uid && !isAdmin()) {
-          throw new Error('Chamado reservado por outro operador.');
-        }
-        if (selectedStatus === 'em_tratamento' && !['aberto', 'reaberto', 'em_tratamento'].includes(serverStatus)) {
-          throw new Error('Não é possível reservar um chamado encerrado.');
-        }
-        previousForEvents = current;
-        transaction.update(ticketRef, updatePayload);
-        transaction.set(doc(collection(db, 'chamados', ticketId, 'historico')), historyPayload(textoFinal, historyType, anexo ? { anexo } : {}));
-      });
-    } else {
-      const batch = writeBatch(db);
-      batch.update(ticketRef, updatePayload);
-      batch.set(doc(collection(db, 'chamados', ticketId, 'historico')), historyPayload(textoFinal, historyType, anexo ? { anexo } : {}));
-      await batch.commit();
-    }
+    const batch = writeBatch(db);
+    batch.update(ticketRef, updatePayload);
+    batch.set(doc(collection(db, 'chamados', ticketId, 'historico')), historyPayload(textoFinal, historyType, anexo ? { anexo } : {}));
+    await batch.commit();
 
     let eventWarning = '';
     if (statusChanged && typeof ticket === 'object') {
       eventWarning = [
-        await tryCommitStatusTimelineEvent(ticketRef, previousForEvents, selectedStatus, textoFinal, updatePayload),
-        await tryCommitOperatorEvent(previousForEvents, selectedStatus, textoFinal)
+        await tryCommitStatusTimelineEvent(ticketRef, ticket, selectedStatus, textoFinal, updatePayload),
+        await tryCommitOperatorEvent(ticket, selectedStatus, textoFinal)
       ].filter(Boolean).join(' ');
     }
 
@@ -3110,50 +3031,24 @@ async function reserveTicket(ticketId) {
   if (!canReserveTicket(ticket)) return showToast('Este chamado não pode ser reservado agora.', 'error');
 
   const buttons = [...document.querySelectorAll(`[data-reserve-ticket-id="${CSS.escape(ticketId)}"]`)];
-  buttons.forEach((button) => { button.disabled = true; button.textContent = 'Reservando...'; });
+  buttons.forEach((button) => {
+    button.disabled = true;
+    button.textContent = 'Reservando...';
+  });
 
-  const ticketRef = doc(db, 'chamados', ticketId);
-  const texto = statusAutoOccurrenceText('em_tratamento');
-  let oldTicket = null;
-  const optimistic = {
-    ...ticket, status: 'em_tratamento',
-    operadorTratamentoId: state.user.uid,
-    operadorTratamentoNome: selectedUserName(),
-    operadorTratamentoEmail: state.user.email,
-    tratamentoIniciadoEm: new Date(), atualizadoEm: new Date()
-  };
-  state.optimisticReservations.set(ticketId, { ticket: optimistic, until: Date.now() + 30000 });
-  mergeTicketBuckets();
   try {
-    await runTransaction(db, async (transaction) => {
-      const snap = await transaction.get(ticketRef);
-      if (!snap.exists()) throw new Error('Este chamado não existe mais.');
-      const current = { id: snap.id, ...snap.data() };
-      if (!['aberto', 'reaberto'].includes(current.status || 'aberto')) {
-        throw new Error('Outro operador já reservou ou finalizou este chamado.');
-      }
-      oldTicket = current;
-      const updatePayload = {
-        ...ticketStatusPayload('em_tratamento'),
-        ...lastOccurrencePayload(texto, 'tratativa')
-      };
-      transaction.update(ticketRef, updatePayload);
-      transaction.set(doc(collection(db, 'chamados', ticketId, 'historico')), historyPayload(texto, 'tratativa'));
-    });
-    // Eventos complementares mantidos para compatibilidade com relatórios existentes.
-    await tryCommitStatusTimelineEvent(ticketRef, oldTicket, 'em_tratamento', texto);
-    await tryCommitOperatorEvent(oldTicket, 'em_tratamento', texto);
-    showToast('Chamado reservado para você. Ele permanece na posição original.', 'success');
+    await updateTicketStatus(ticket, 'em_tratamento', statusAutoOccurrenceText('em_tratamento'));
   } catch (error) {
-    state.optimisticReservations.delete(ticketId);
-    mergeTicketBuckets();
     console.error('Erro ao reservar chamado:', error);
     const message = error?.code === 'permission-denied'
-      ? 'Permissão negada pelas regras do Firestore. Verifique as regras publicadas.'
+      ? 'Permissão negada pelo Firestore. Confira se as regras mais recentes foram publicadas e recarregue com Ctrl + F5.'
       : error.message;
-    showToast(`Não foi possível reservar: ${message}`, 'error');
+    showToast(`Erro ao reservar chamado: ${message}`, 'error');
   } finally {
-    buttons.forEach((button) => { button.disabled = false; button.textContent = 'Reservar'; });
+    buttons.forEach((button) => {
+      button.disabled = false;
+      button.textContent = 'Reservar';
+    });
   }
 }
 
@@ -3220,23 +3115,21 @@ async function createTicket(event) {
     if (existingTicket) {
       const { anexo, warning } = await tryUploadTicketFile(existingRef.id, files);
       const updatePayload = {
-        ...(CLOSED_STATUSES.includes(existingTicket.status)
-          ? ticketStatusPayload('reaberto')
-          : { atualizadoEm: serverTimestamp() }),
+        ...ticketStatusPayload('reaberto'),
         ...requesterUpdatePayload(),
-        ...lastOccurrencePayload(observacao, CLOSED_STATUSES.includes(existingTicket.status) ? 'reabertura' : 'observacao', anexo),
+        ...lastOccurrencePayload(observacao, 'reabertura', anexo),
         ...(anexo ? { anexo } : {})
       };
 
       const batch = writeBatch(db);
       batch.update(existingRef, updatePayload);
-      batch.set(doc(collection(db, 'chamados', existingRef.id, 'historico')), historyPayload(observacao, CLOSED_STATUSES.includes(existingTicket.status) ? 'reabertura' : 'observacao', anexo ? { anexo } : {}));
+      batch.set(doc(collection(db, 'chamados', existingRef.id, 'historico')), historyPayload(observacao, 'reabertura', anexo ? { anexo } : {}));
       await batch.commit();
 
-      if (CLOSED_STATUSES.includes(existingTicket.status)) await tryCommitStatusTimelineEvent(existingRef, existingTicket, 'reaberto', observacao, updatePayload);
-      if (CLOSED_STATUSES.includes(existingTicket.status)) await tryCommitOperatorEvent(existingTicket, 'reaberto', observacao);
+      await tryCommitStatusTimelineEvent(existingRef, existingTicket, 'reaberto', observacao, updatePayload);
+      await tryCommitOperatorEvent(existingTicket, 'reaberto', observacao);
 
-      showToast(warning || (CLOSED_STATUSES.includes(existingTicket.status) ? 'Chamado reaberto com nova ocorrência.' : 'Nova ocorrência adicionada ao chamado existente, sem alterar o responsável.'), warning ? 'error' : 'success');
+      showToast(warning || 'Já existia chamado com essa chave e formulário. Reabri o mesmo chamado e incluí a nova ocorrência.', warning ? 'error' : 'success');
       state.selectedTicketId = existingRef.id;
     } else {
       const { anexo, warning } = await tryUploadTicketFile(deterministicRef.id, files);
@@ -3335,23 +3228,21 @@ async function createProductTicket(event) {
     if (existingTicket) {
       const { anexo, warning } = await tryUploadTicketFile(existingRef.id, files);
       const updatePayload = {
-        ...(CLOSED_STATUSES.includes(existingTicket.status)
-          ? ticketStatusPayload('reaberto')
-          : { atualizadoEm: serverTimestamp() }),
+        ...ticketStatusPayload('reaberto'),
         ...requesterUpdatePayload(),
-        ...lastOccurrencePayload(observacao, CLOSED_STATUSES.includes(existingTicket.status) ? 'reabertura' : 'observacao', anexo),
+        ...lastOccurrencePayload(observacao, 'reabertura', anexo),
         ...(anexo ? { anexo } : {})
       };
 
       const batch = writeBatch(db);
       batch.update(existingRef, updatePayload);
-      batch.set(doc(collection(db, 'chamados', existingRef.id, 'historico')), historyPayload(observacao, CLOSED_STATUSES.includes(existingTicket.status) ? 'reabertura' : 'observacao', anexo ? { anexo } : {}));
+      batch.set(doc(collection(db, 'chamados', existingRef.id, 'historico')), historyPayload(observacao, 'reabertura', anexo ? { anexo } : {}));
       await batch.commit();
 
-      if (CLOSED_STATUSES.includes(existingTicket.status)) await tryCommitStatusTimelineEvent(existingRef, existingTicket, 'reaberto', observacao, updatePayload);
-      if (CLOSED_STATUSES.includes(existingTicket.status)) await tryCommitOperatorEvent(existingTicket, 'reaberto', observacao);
+      await tryCommitStatusTimelineEvent(existingRef, existingTicket, 'reaberto', observacao, updatePayload);
+      await tryCommitOperatorEvent(existingTicket, 'reaberto', observacao);
 
-      showToast(warning || (CLOSED_STATUSES.includes(existingTicket.status) ? 'Chamado de produto reaberto com nova ocorrência.' : 'Nova ocorrência adicionada ao chamado existente, sem alterar o responsável.'), warning ? 'error' : 'success');
+      showToast(warning || 'Já existia chamado desse produto para este formulário. Reabri e incluí a nova ocorrência.', warning ? 'error' : 'success');
       state.selectedTicketId = existingRef.id;
     } else {
       const { anexo, warning } = await tryUploadTicketFile(deterministicRef.id, files);
@@ -4060,40 +3951,12 @@ async function logout() {
   await signOut(auth);
 }
 
-function startMyProfileListener() {
-  if (state.unsubProfile) { state.unsubProfile(); state.unsubProfile = null; }
-  if (!state.user?.uid || !state.profile) return;
-  const userId = state.user.uid;
-  state.unsubProfile = onSnapshot(doc(db, 'usuarios', userId), (snap) => {
-    if (!snap.exists() || !state.user || state.user.uid !== userId) return;
-    const next = { ...state.profile, ...snap.data() };
-    if (next.ativo === false) {
-      state.profile = next;
-      stopTicketsListener();
-      if (state.unsubUsers) { state.unsubUsers(); state.unsubUsers = null; }
-      $('ticketDetailDialog')?.close();
-      showOnly(els.blockedView);
-      return;
-    }
-    const changed = ['papel', 'organizacaoId', 'organizacaoNome', 'ativo'].some(k => next[k] !== state.profile?.[k]);
-    state.profile = next;
-    if (changed) {
-      $('ticketDetailDialog')?.close();
-      state.selectedTicketId = null;
-      showToast('Seu perfil/permissões foram atualizados.', 'success');
-      renderApp();
-    }
-  }, (error) => console.warn('[Xabuia] Não foi possível acompanhar o próprio perfil:', error));
-}
-
 function cleanupListeners() {
   stopTicketsListener();
   if (state.unsubOrgs) state.unsubOrgs();
   if (state.unsubUsers) state.unsubUsers();
-  if (state.unsubProfile) state.unsubProfile();
   state.unsubOrgs = null;
   state.unsubUsers = null;
-  state.unsubProfile = null;
 }
 
 
@@ -4307,7 +4170,7 @@ function setupHistoryPasteZone() {
 function activeAttachmentSetter() {
   if (els.ticketDialog?.open) return setTicketAttachment;
   if (els.productTicketDialog?.open) return setProductAttachment;
-  if ($('ticketDetailDialog')?.open && $('historyPasteZone') && state.selectedTicketId) return setHistoryAttachment;
+  if ($('historyPasteZone') && state.selectedTicketId) return setHistoryAttachment;
   return null;
 }
 
@@ -4370,7 +4233,6 @@ onAuthStateChanged(auth, async (user) => {
 
     startOrgListener();
     renderApp();
-    startMyProfileListener();
   } catch (error) {
     const message = String(error?.message || '');
     const isPermission = error?.code === 'permission-denied' || message.toLowerCase().includes('missing or insufficient permissions');
@@ -4514,10 +4376,7 @@ document.addEventListener('click', (event) => {
     return;
   }
 
-  const openTicketButton = event.target.closest?.('[data-open-ticket-id]');
-  if (openTicketButton) { event.preventDefault(); event.stopPropagation(); selectTicket(openTicketButton.dataset.openTicketId); return; }
-
-  const ticketButton = event.target.closest?.('tr[data-ticket-id]');
+  const ticketButton = event.target.closest?.('[data-ticket-id]');
   if (ticketButton) selectTicket(ticketButton.dataset.ticketId);
 
   const orgButton = event.target.closest?.('[data-toggle-org]');
