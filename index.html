@@ -10,10 +10,10 @@
   <link rel="shortcut icon" type="image/png" href="./xabuia.png?v=1" />
   <link rel="apple-touch-icon" href="./xabuia.png?v=1" />
 
-  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./styles.css?v=35.0-teste" />
 </head>
 
-<body class="xabuia-v30">
+<body class="xabuia-v30 xabuia-v35">
   <div id="toast" class="toast hidden"></div>
 
   <main id="authView" class="auth-shell hidden">
@@ -135,6 +135,16 @@
       </div>
     </dialog>
 
+    <section class="summary-grid">
+      <article class="metric card"><span>Abertos</span><strong id="countAberto">0</strong></article>
+      <article class="metric card"><span>Reabertos</span><strong id="countReaberto">0</strong></article>
+      <article class="metric card"><span>Em tratamento</span><strong id="countTratamento">0</strong></article>
+      <article class="metric card"><span>Informações divergentes</span><strong id="countInformacoesDivergentes">0</strong></article>
+      <article class="metric card"><span>Devolver e recusar</span><strong id="countDevolverRecusar">0</strong></article>
+      <article class="metric card"><span>Finalizados</span><strong id="countFinalizado">0</strong></article>
+      <article class="metric card"><span>Total visível</span><strong id="countTotal">0</strong></article>
+    </section>
+
     <section class="toolbar card toolbar-v12">
       <div class="field grow search-field">
         <span>Buscar</span>
@@ -206,35 +216,42 @@
       </div>
     </section>
 
-    <section class="summary-grid">
-      <article class="metric card"><span>Abertos</span><strong id="countAberto">0</strong></article>
-      <article class="metric card"><span>Reabertos</span><strong id="countReaberto">0</strong></article>
-      <article class="metric card"><span>Em tratamento</span><strong id="countTratamento">0</strong></article>
-      <article class="metric card"><span>Informações divergentes</span><strong id="countInformacoesDivergentes">0</strong></article>
-      <article class="metric card"><span>Devolver e recusar</span><strong id="countDevolverRecusar">0</strong></article>
-      <article class="metric card"><span>Finalizados</span><strong id="countFinalizado">0</strong></article>
-      <article class="metric card"><span>Total visível</span><strong id="countTotal">0</strong></article>
-    </section>
 
-    <section class="content-grid content-grid-v30">
-      <section class="card ticket-list-card queue-panel">
-        <div class="section-head queue-head">
-          <div>
-            <h2>Fila de chamados</h2>
-          </div>
-          <span id="liveStatus" class="pill">Carregando...</span>
+
+    <section class="card table-card xabuia-queue-panel">
+      <div class="section-head xabuia-table-heading">
+        <div>
+          <h2>Fila de chamados</h2>
+          <p class="muted">Ordem de abertura • mais antigos primeiro • reserva sem trocar de posição</p>
         </div>
-
-        <div id="ticketList" class="ticket-list ticket-list-v30" aria-live="polite"></div>
-      </section>
-
-      <aside id="ticketDetail" class="card detail-card detail-card-v30 empty">
-        <h2>Selecione um chamado</h2>
-        <p class="muted">Clique em um chamado para ver a nota, a ocorrência inicial e adicionar novas observações.</p>
-      </aside>
+        <span id="liveStatus" class="pill">Carregando...</span>
+      </div>
+      <div class="xabuia-table-wrap" role="region" aria-label="Fila de chamados" tabindex="0">
+        <table class="xabuia-tickets-table">
+          <thead><tr>
+            <th>Status</th><th>Reserva</th><th>Chamado / referência</th>
+            <th>Formulário</th><th>Organização</th><th>Solicitante</th>
+            <th>Abertura / tempo</th><th>Ações</th>
+          </tr></thead>
+          <tbody id="ticketList" aria-live="polite"></tbody>
+        </table>
+      </div>
     </section>
   </main>
 
+
+
+  <dialog id="ticketDetailDialog" class="modal wide xabuia-detail-dialog" aria-labelledby="detailModalTitle">
+    <div class="xabuia-detail-shell">
+      <div class="xabuia-detail-modal-head">
+        <div class="xabuia-detail-modal-label"><strong id="detailModalTitle">Detalhes do chamado</strong><span id="detailLiveStatus"></span></div>
+        <button type="button" class="icon-btn" data-close-dialog="ticketDetailDialog" aria-label="Fechar detalhes">×</button>
+      </div>
+      <div id="ticketDetail" class="card detail-card detail-card-v30 empty">
+        <h2>Selecione um chamado</h2>
+      </div>
+    </div>
+  </dialog>
 
   <template id="ticketDetailVisualModel">
     <article class="detail-summary-card detail-summary-v30 ticket-framed">
@@ -482,7 +499,7 @@
     </div>
   </dialog>
 
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="./app.js?v=35.0-teste"></script>
   <script src="./xabuia-title-alertas.js"></script>
 </body>
 </html>

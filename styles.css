@@ -3203,3 +3203,77 @@ body.xabuia-v30 .ticket-type-card span {
 .ticket-item.xabuia-unread-ticket { outline: 2px solid #f59e0b; box-shadow: 0 0 0 3px rgba(245,158,11,.14); }
 #registerUsernameWrap small, #onboardingView .field small { font-size: .73rem; color: #64748b; }
 @media(max-width:700px) { #xabuiaAlertsBtn, #xabuiaSoundBtn { flex: 1 1 auto; } }
+
+
+/* ============================================================
+   XABUIA V35 TESTE • Layout de operação compacta (Comercial)
+   O CSS anterior foi preservado para login, cadastros, admin,
+   anexos, linha do tempo e formulários que continuam existentes.
+   ============================================================ */
+body.xabuia-v35 {
+  --bg: #f2f5f9; --card:#fff; --text:#152033; --muted:#667085;
+  --line:#d8e2ee; --primary:#155eef; --primary-dark:#1048ba;
+  --shadow:0 9px 26px rgba(15,23,42,.07); --radius:12px;
+  font-size:13px; background:radial-gradient(circle at top left,rgba(37,99,235,.10),transparent 30rem),var(--bg);
+}
+body.xabuia-v35 .app {width:min(1780px,100%);padding:10px;}
+body.xabuia-v35 .topbar {background:rgba(255,255,255,.96);border-radius:12px;padding:9px 12px;margin-bottom:8px;position:sticky;top:0;z-index:5;backdrop-filter:blur(9px);box-shadow:var(--shadow);}
+body.xabuia-v35 .brand-logo,body.xabuia-v35 .brand-mark {width:42px;height:42px;border-radius:11px;}
+body.xabuia-v35 .brand h1 {font-size:1.15rem;}
+body.xabuia-v35 .brand p {font-size:.76rem;}
+body.xabuia-v35 .top-actions {gap:6px;}
+body.xabuia-v35 .top-actions .btn {min-width:0;min-height:34px;padding:7px 10px;border-radius:9px;font-size:.79rem;}
+body.xabuia-v35 .top-actions .btn.primary {min-width:0;}
+body.xabuia-v35 .summary-grid {display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin-bottom:8px;}
+body.xabuia-v35 .summary-grid .metric.card {padding:7px 9px;min-height:52px;border-radius:10px;}
+body.xabuia-v35 .summary-grid .metric span {font-size:.65rem;line-height:1.1;font-weight:800;text-transform:uppercase;min-height:0;}
+body.xabuia-v35 .summary-grid .metric strong {font-size:1.18rem;margin-top:3px;line-height:1;}
+body.xabuia-v35 .toolbar, body.xabuia-v35 .toolbar-v12 {display:flex;gap:7px;flex-wrap:wrap;align-items:end;padding:9px 10px;margin-bottom:8px;border-radius:12px;}
+body.xabuia-v35 .toolbar .field {flex:1 1 120px;min-width:115px;gap:4px;}
+body.xabuia-v35 .toolbar .field.search-field {flex:3 1 310px;min-width:200px;}
+body.xabuia-v35 .toolbar .dropdown-field {min-width:125px;}
+body.xabuia-v35 .toolbar .field span {font-size:.65rem;font-weight:800;text-transform:uppercase;}
+body.xabuia-v35 .toolbar .field input,body.xabuia-v35 .toolbar .field select,
+body.xabuia-v35 .toolbar .multi-dropdown summary {height:34px;min-height:34px;padding:6px 9px;border-radius:9px;font-size:.78rem;}
+body.xabuia-v35 .multi-dropdown-menu {z-index:10;}
+body.xabuia-v35 .table-card {padding:0;border-radius:12px;overflow:hidden;}
+body.xabuia-v35 .xabuia-table-heading {padding:12px 13px;margin:0;display:flex;align-items:center;justify-content:space-between;gap:10px;}
+body.xabuia-v35 .xabuia-table-heading h2 {font-size:1.05rem;line-height:1.1;margin:0 0 3px;}
+body.xabuia-v35 .xabuia-table-heading p {font-size:.74rem;margin:0;}
+body.xabuia-v35 .xabuia-table-wrap {overflow:auto;max-height:calc(100vh - 265px);min-height:135px;border-top:1px solid var(--line);}
+body.xabuia-v35 .xabuia-tickets-table {width:100%;min-width:1090px;border-collapse:collapse;table-layout:auto;}
+body.xabuia-v35 .xabuia-tickets-table th,body.xabuia-v35 .xabuia-tickets-table td {padding:7px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle;font-size:.76rem;line-height:1.26;}
+body.xabuia-v35 .xabuia-tickets-table th {position:sticky;top:0;background:#f8fafc;color:var(--muted);z-index:2;font-size:.63rem;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap;}
+body.xabuia-v35 .xabuia-tickets-table tr.xabuia-table-row {cursor:pointer;}
+body.xabuia-v35 .xabuia-tickets-table tr.xabuia-table-row:hover td {background:#f1f6ff;}
+body.xabuia-v35 .xabuia-tickets-table tr.selected td {background:#eff6ff;}
+body.xabuia-v35 .xabuia-tickets-table tr.xabuia-unread-ticket td:first-child {box-shadow:inset 3px 0 #f59e0b;}
+body.xabuia-v35 .xabuia-tickets-table td strong.table-main {display:block;font-size:.8rem;line-height:1.24;}
+body.xabuia-v35 .xabuia-tickets-table td small {display:block;font-weight:400;font-size:.66rem;margin-top:2px;line-height:1.2;}
+body.xabuia-v35 .table-kicker {color:var(--muted);overflow-wrap:anywhere;max-width:300px;}
+body.xabuia-v35 .table-reserve strong {display:block;max-width:145px;overflow-wrap:anywhere;}
+body.xabuia-v35 .table-person {font-size:.74rem;}
+body.xabuia-v35 .table-type {font-size:.73rem;line-height:1.2;display:block;max-width:145px;}
+body.xabuia-v35 .table-date {white-space:nowrap;}
+body.xabuia-v35 .table-actions {white-space:nowrap;}
+body.xabuia-v35 .table-actions .btn {min-height:29px;padding:5px 9px;border-radius:8px;font-size:.72rem;min-width:0;width:auto;margin:1px 3px 1px 0;}
+body.xabuia-v35 .table-actions .reserve-ticket-btn {color:#fff;background:#155eef;border:0;}
+body.xabuia-v35 .table-actions .reserve-ticket-btn:hover {background:#1048ba;}
+body.xabuia-v35 .table-actions .table-open-btn {border:1px solid var(--line);background:#fff;}
+body.xabuia-v35 .xabuia-tickets-table .status {padding:3px 7px;border-radius:99px;font-size:.67rem;white-space:nowrap;}
+body.xabuia-v35 .xabuia-tickets-table .org-chip {font-size:.69rem;padding:3px 7px;max-width:155px;}
+body.xabuia-v35 .empty-table-row td {padding:35px!important;text-align:center;color:var(--muted);}
+body.xabuia-v35 .xabuia-detail-dialog {width:min(1240px,calc(100vw - 22px));max-height:calc(100dvh - 26px);padding:0;border-radius:13px;background:#fff;overflow:auto;}
+body.xabuia-v35 .xabuia-detail-dialog::backdrop {background:rgba(15,23,42,.62);}
+body.xabuia-v35 .xabuia-detail-shell {display:block;background:#fff;}
+body.xabuia-v35 .xabuia-detail-modal-head {position:sticky;top:0;z-index:6;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 15px;border-bottom:1px solid var(--line);background:#fff;}
+body.xabuia-v35 .xabuia-detail-modal-label {display:flex;align-items:center;gap:12px;min-width:0;flex-wrap:wrap;}
+body.xabuia-v35 .xabuia-detail-modal-label strong {font-size:1.05rem;overflow-wrap:anywhere;}
+body.xabuia-v35 #ticketDetail {position:static;top:auto;width:100%;padding:12px 14px;box-shadow:none;border:0;border-radius:0;min-height:200px;}
+body.xabuia-v35 #ticketDetail .occurrence-panel {max-width:100%;}
+body.xabuia-v35 #ticketDetail .detail-summary-panel {margin:10px 0 14px;}
+body.xabuia-v35 #ticketDetail .unified-timeline {max-height:380px;overflow:auto;}
+body.xabuia-v35 .modal .modal-card {max-height:calc(100dvh - 30px);overflow-y:auto;}
+@media (max-width:1320px) {body.xabuia-v35 .summary-grid {grid-template-columns:repeat(auto-fit,minmax(125px,1fr));}}
+@media (max-width:850px) {body.xabuia-v35 .topbar {position:static;}body.xabuia-v35 .xabuia-table-wrap {max-height:65vh;}body.xabuia-v35 .toolbar .field {min-width:165px;}body.xabuia-v35 .top-actions .btn {flex:0 1 auto;}}
+@media (max-width:560px) {body.xabuia-v35 .app {padding:7px;}body.xabuia-v35 .summary-grid {grid-template-columns:repeat(2,minmax(0,1fr));}body.xabuia-v35 .toolbar .field,body.xabuia-v35 .toolbar .field.search-field {flex:1 1 100%;min-width:0;}body.xabuia-v35 .top-actions .btn {flex:1 1 auto;}body.xabuia-v35 .xabuia-detail-dialog {width:calc(100vw - 12px);}body.xabuia-v35 #ticketDetail {padding:9px;}}
