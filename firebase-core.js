@@ -21,15 +21,35 @@ export const BUYERS_SEED = [
  'GISLAINE MACIEL', 'PAULO CESAR SANTANA', 'RAFAEL GOMES', 'REGINALDO S MARTINS',
  'ROSANGELA', 'TATIANA CARDOSO', 'THIAGO HIDEO', 'VALDENIR', 'WAGNER BERLOFFA', 'ZILDA SALICANO'
 ];
+// Catálogos iniciais pequenos e OPT-IN: não são criados automaticamente.
+// Nunca apagamos nem sobrescrevemos os tipos já cadastrados.
 export const DIVERGENCE_SEED = [
- {id:'fiscal_documentacao',setor:'fiscal',nome:'Documentação fiscal divergente'},
- {id:'fiscal_tributacao',setor:'fiscal',nome:'Divergência tributária'},
- {id:'comercial_sem_xml',setor:'comercial',nome:'Nota sem XML'},
- {id:'comercial_sem_pedido',setor:'comercial',nome:'Nota sem pedido'},
- {id:'comercial_pedido_divergente',setor:'comercial',nome:'Pedido divergente'},
- {id:'comercial_valor',setor:'comercial',nome:'Valor divergente'},
- {id:'cadastro_produto',setor:'cadastro',nome:'Produto não cadastrado'},
- {id:'cadastro_fornecedor',setor:'cadastro',nome:'Fornecedor não cadastrado'}
+ {setor:'fiscal', nome:'Regra fiscal em desacordo'},
+ {setor:'cadastro', nome:'Produto não encontrado'},
+ {setor:'comercial', nome:'Nota sem XML'},
+ {setor:'comercial', nome:'Nota sem pedido'},
+ {setor:'comercial', nome:'Produto sem pedido'},
+ {setor:'comercial', nome:'Quantidade divergente'},
+ {setor:'comercial', nome:'Valor divergente'}
+];
+// O efeito é aplicado quando a CRF REGISTRA uma resposta, não pelo fornecedor.
+export const RESPONSE_EFFECTS = {
+ validar: 'Retornar à CRF para validação',
+ concluir: 'Concluir a divergência',
+ devolver: 'Devolver / recusar a nota'
+};
+export const RESPONSE_SEED = [
+ {setor:'fiscal',nome:'Informações divergentes (erro da CRF)',efeito:'validar'},
+ {setor:'fiscal',nome:'Devolver e recusar',efeito:'devolver'},
+ {setor:'fiscal',nome:'Finalizado',efeito:'concluir'},
+ {setor:'cadastro',nome:'Informações divergentes (erro da CRF)',efeito:'validar'},
+ {setor:'cadastro',nome:'Devolver e recusar',efeito:'devolver'},
+ {setor:'cadastro',nome:'Finalizado',efeito:'concluir'},
+ {setor:'comercial',nome:'XML baixado',efeito:'validar'},
+ {setor:'comercial',nome:'Pedido corrigido',efeito:'validar'},
+ {setor:'comercial',nome:'Informações divergentes',efeito:'validar'},
+ {setor:'comercial',nome:'Solicitar reentrega',efeito:'validar'},
+ {setor:'comercial',nome:'Devolver e recusar',efeito:'devolver'}
 ];
 export const digits = s => String(s ?? '').replace(/\D/g,'');
 export const plain = s => String(s ?? '').trim().replace(/\s+/g,' ');

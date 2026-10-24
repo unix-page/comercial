@@ -38,6 +38,18 @@ service cloud.firestore {
       allow create, update: if admin();
       allow delete: if false;
     }
+    // Respostas por setor: somente admins alteram os textos/efeitos.
+    // Operadores ativos consultam para registrar retornos no Infradesk.
+    match /respostas_v2/{id} {
+      allow read: if active();
+      allow create, update: if admin()
+        && request.resource.data.setor in ['fiscal', 'comercial', 'cadastro']
+        && request.resource.data.nome is string
+        && request.resource.data.nome.size() >= 3
+        && request.resource.data.nome.size() <= 120
+        && request.resource.data.efeito in ['validar', 'concluir', 'devolver'];
+      allow delete: if false;
+    }
     match /notas_v2/{chave} {
       allow read: if active();
       allow create: if crf() && validKey(chave) && request.resource.data.chave == chave;
@@ -64,8 +76,14 @@ service cloud.firestore {
       allow create: if crf() && validKey(request.resource.data.chave) &&
         request.resource.data.criadoPor == request.auth.uid && request.resource.data.fimEm == null;
       allow update: if crf() && resource.data.fimEm == null &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fimEm', 'fechadoPor', 'fechamento']) &&
-        request.resource.data.fimEm is timestamp;
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'fimEm', 'fechadoPor', 'fechamento', 'respostaId', 'respostaNome', 'atribuicaoTempo'
+        ]) &&
+        request.resource.data.fimEm is timestamp &&
+        request.resource.data.fechamento == 'resposta' &&
+        request.resource.data.respostaId is string &&
+        request.resource.data.respostaNome is string &&
+        request.resource.data.atribuicaoTempo in ['fiscal', 'comercial', 'cadastro', 'crf_erro'];
       allow delete: if false;
     }
     match /{document=**} { allow read, write: if false; }

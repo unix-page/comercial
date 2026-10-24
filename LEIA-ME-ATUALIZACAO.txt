@@ -1,0 +1,44 @@
+Comercial V2.4.0 — Histórico completo por NF + categoria Infradesk + relatórios
+
+O QUE PUBLICAR NA RAIZ DO GITHUB:
+1. comercial.js    — no InfraDesk: lê Categoria, mostra link para histórico completo e grava categoria nos novos eventos/divergências.
+2. script.js       — painel do GitHub: lista paginada, histórico consolidado por chave, relatórios e gráficos por data.
+3. index.html      — novos filtros e opção "Carregar mais".
+4. style.css       — estilos da linha do tempo e gráficos, mantendo estilos do admin.
+5. metricas.js     — NOVO arquivo obrigatório, cálculos de tempo e notas distintas.
+
+ENTREGA EXTRA: comercial.txt com o mesmo conteúdo de comercial.js para quem prefere baixar scripts em .txt.
+Não é necessário alterar loader, admin, regras do Firestore ou coleção usuarios.
+
+COMO TESTAR
+A. Publicar os 5 arquivos na raiz do GitHub Pages.
+B. Recarregar InfraDesk e o GitHub Pages com Ctrl+Shift+R.
+C. Abra uma NF já registrada, como a NF 424785, no painel: clique em "Linha do tempo da NF".
+   Deve reunir todas as divergências da mesma chave, eventos ordenados e passagens de cada setor.
+D. Conferir: "tempo calendário" (uma só linha temporal) x "soma das passagens" (pode somar sobreposições).
+E. No InfraDesk, confira "Categoria da nota" lida do card `.item-subcategoria[title]` ou texto.
+F. Crie NOVA ocorrência de teste para conferir que categoria e empresa ficaram registradas na nota.
+G. No painel, use filtros por data, setor e categoria. Abra "Relatório". Use "Carregar mais" se houver páginas adicionais.
+
+CUIDADOS IMPORTANTES
+- Uma NF possui uma única chave, mas pode ter muitas divergências, eventos e passagens.
+- Evento é imutável, cada resposta para o relógio da passagem atual.
+- Tempo de calendário = da primeira abertura ao último encerramento (ou agora), inclusive lacunas sem pendência.
+- Tempo da NF em pendência = união das passagens (inclusive abertas até agora), sem duplicar intervalos simultâneos nem contar lacunas sem nenhuma pendência.
+- Soma de passagens = soma dos períodos concluídos, pode contar intervalos simultâneos mais de uma vez.
+- Tempo com setores sem sobreposição = união dos intervalos concluídos.
+- Tempo por setor e tipo = soma dos relógios das passagens, incluindo retornos ao mesmo setor/tipo.
+- 'Informações divergentes' separa responsabilidade de retrabalho da CRF nos relatórios, mas conserva receptor original no histórico.
+- Para registros anteriores à V2.4, a Categoria pode aparecer 'Categoria não registrada'; não inventamos classificação nem fazemos gravação automática retroativa.
+- O relatório aplica o filtro de data à data de ABERTURA da divergência, não à data da resposta. O resultado é sempre do CONJUNTO DE DIVERGÊNCIAS CARREGADAS, a menos que todas as páginas já tenham sido consultadas.
+- A consulta por NF usa (até) 1 leitura do documento da nota e 3 queries por chave sob demanda, com limite de 80 divergências, 250 eventos e 250 passagens. Quando limites forem atingidos, o painel alerta sobre possível histórico parcial.
+- O relatório consulta passagens apenas das divergências filtradas, em grupos de até 10 IDs, no clique do usuário. Nunca faz uma varredura global de 400 passagens a cada visita.
+- O Infradesk consulta somente cards visíveis sem cache, até 20 chaves por varredura, sem listeners, mantendo cache local com validade de 5 minutos.
+- Nenhum dado existente foi apagado ou migrado.
+
+VALIDAÇÃO
+node --check comercial.js
+node --check script.js
+node --check metricas.js
+Testes sintéticos: sobreposição de intervalos, soma por setor, CRF, notas distintas e status legado.
+Não testado na conta Firebase autenticada ou InfraDesk real.

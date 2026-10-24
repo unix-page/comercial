@@ -1,0 +1,31 @@
+COMERCIAL V2.3.4 — RESPOSTA ENCERRA A OCORRÊNCIA
+
+Substituir na raiz do GitHub Pages estes três arquivos:
+- comercial.js
+- script.js
+- index.html
+
+NÃO alterar:
+- comercial-loader.user.js (permanece a versão que já funciona)
+- admin.html, admin.js, firebase-core.js, firestore.rules
+- cadastros do Firebase, coleções e documentos existentes
+
+Mudanças
+1. Ao gravar qualquer resposta do setor, a mesma transação fecha o relógio da passagem e encerra a ocorrência.
+2. Resposta comum (Pedido corrigido / XML baixado): situação 'Respondida'.
+3. Resposta de efeito 'concluir' (ex.: Finalizado): situação 'Concluída'.
+4. Resposta 'Devolver e recusar': situação 'Devolução'. Continua exigindo justificativa.
+5. Ao selecionar divergência já respondida/encerrada, o Comercial mostra somente a situação e o histórico resumido. Oculta 'Próxima ação', observação e o botão Salvar. Você pode selecionar '+ Abrir nova divergência' para outra ocorrência desta NF.
+6. Registros anteriores com status 'em_crf' e resposta já gravada são reconhecidos visualmente como 'Respondida', sem atualização de documentos históricos (zero gravações de migração).
+7. No painel, 'Respondida' aparece na fila e nas métricas de encerramento, e não conta como pendente.
+8. Tempo atribuído ao setor ou a erro da CRF permanece gravado na passagem sem dupla contagem.
+
+Custos: nenhuma consulta ou gravação adicional é introduzida. O painel continua sob demanda; o loader permanece igual.
+
+Teste sugerido:
+- Faça Ctrl+Shift+R no Infradesk e no painel do GitHub.
+- Abra a NF 424785 e selecione as divergências já respondidas: devem aparecer em modo consulta, sem 'Próxima ação'.
+- No painel, clique Atualizar: devem aparecer como Respondida, e não Aguardando CRF.
+- Abra uma nova divergência de teste e registre uma resposta: ela deve passar para Respondida ou para o resultado explícito correspondente, com passagem fechada.
+
+Segurança: arquivo verificado em sintaxe e testes locais; ainda não validado no Infradesk/Firebase autenticado real.

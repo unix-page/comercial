@@ -1,0 +1,12 @@
+Comercial V2.3 — verificações estáticas e testes locais
+
+- node --check em comercial.js e script.js
+- sem onSnapshot() no comercial.js (somente consulta ao clicar no ícone)
+- painel substitui listener por getDocs() sob demanda, com limite de 120 divergências
+- resposta fecha passagem na mesma transação que grava evento e atualização da divergência
+- comprador único ativo: seleção automática; com mais de um, exigir escolha na abertura nova
+- respostas ativas filtradas pelo setor atual do encaminhamento
+- tempo CRF atribuído a resposta cujo nome normalizado começa com "informacoes divergentes" ou erroCrf=true
+- dados de fornecedor com razão social importada não são sobrescritos no fornecedor cadastrado
+
+LIMITAÇÕES: estes testes não autenticam no Infradesk nem exercitam as regras do Firestore no servidor real.
