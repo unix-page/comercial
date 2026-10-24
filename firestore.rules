@@ -134,15 +134,30 @@ service cloud.firestore {
       allow read: if active();
       allow create: if crf() && validKey(request.resource.data.chave) &&
         request.resource.data.criadoPor == request.auth.uid && request.resource.data.fimEm == null;
-      allow update: if crf() && resource.data.fimEm == null &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'fimEm', 'fechadoPor', 'fechamento', 'respostaId', 'respostaNome', 'atribuicaoTempo'
-        ]) &&
-        request.resource.data.fimEm is timestamp &&
-        request.resource.data.fechamento == 'resposta' &&
-        request.resource.data.respostaId is string &&
-        request.resource.data.respostaNome is string &&
-        request.resource.data.atribuicaoTempo in ['fiscal', 'comercial', 'cadastro', 'crf_erro'];
+      // Uma resposta fecha o relógio UMA vez. A correção posterior do comprador
+      // muda SOMENTE atribuição, mesmo em passagens encerradas, nunca as datas.
+      allow update: if crf() && (
+        (
+          resource.data.fimEm == null &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'fimEm','fechadoPor','fechamento','respostaId','respostaNome','atribuicaoTempo'
+          ]) &&
+          request.resource.data.fimEm is timestamp &&
+          request.resource.data.fechamento == 'resposta' &&
+          request.resource.data.respostaId is string &&
+          request.resource.data.respostaNome is string &&
+          request.resource.data.atribuicaoTempo in ['fiscal','comercial','cadastro','crf_erro']
+        ) || (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'compradorId','compradorNome'
+          ]) &&
+          request.resource.data.compradorId is string &&
+          request.resource.data.compradorId.size() > 0 &&
+          exists(/databases/$(database)/documents/compradores_v2/$(request.resource.data.compradorId)) &&
+          get(/databases/$(database)/documents/compradores_v2/$(request.resource.data.compradorId)).data.get('ativo',true) == true &&
+          request.resource.data.compradorNome == get(/databases/$(database)/documents/compradores_v2/$(request.resource.data.compradorId)).data.nome
+        )
+      );
       allow delete: if false;
     }
     match /{document=**} { allow read, write: if false; }

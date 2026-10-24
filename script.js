@@ -1,15 +1,19 @@
-// Comercial V2.5.1 — consultas manuais, pacote offline, relatórios e linha do tempo locais.
+// Comercial V2.5.7 — filtros de gráficos com clique para ativar/desativar; análise 100% local.
 // Não usar onSnapshot; nenhum clique em filtro/gráfico/timeline consulta Firestore.
 import {db,SECTORS,escapeHtml,fmtDuration,initAuthUI,isAdmin,
   collection,query,where,orderBy,limit,startAfter} from './firebase-core.js';
 import {getDocsFromServer} from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
 import {ms,elapsed,unionMs,effectiveStatus,countGroups,norm,category,buyer,localDate,selectDivergences,groupNotes,reportMetrics,noteTimeline} from './painel-local.js';
+import {setupManualResponse} from './resposta-manual.js';
+import {setupBuyerCorrection} from './corrigir-comprador.js';
 
 const $=s=>document.querySelector(s);
 const PAGE_SIZE=50, FIRESTORE_PAGE=250, IN_CHUNK=30;
 const DB_NAME='comercial_v2_reports_offline';
 const MAX_SNAPSHOTS_PER_USER=5;
-const state={user:null,profile:null,uid:'',snapshot:null,page:0,busy:false,showCharts:false,noteKey:'',inFlight:false,buyerSearch:''};
+const state={user:null,profile:null,uid:'',snapshot:null,page:0,busy:false,showCharts:false,noteKey:'',inFlight:false,typeFilter:'',dayFilter:''};
+let manualResponder = null;
+let buyerCorrection = null;
 const sectors=SECTORS;
 const esc=escapeHtml;
 const dt=v=>ms(v)?new Date(ms(v)).toLocaleString('pt-BR'):'—';
@@ -20,59 +24,61 @@ function status(msg){$('#cacheStatus').textContent=msg;}
 function dateToday(offsetDays=0){const d=new Date();d.setDate(d.getDate()+offsetDays);const z=x=>String(x).padStart(2,'0');return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}`;}
 function sameScope(a,start,end){return a?.start===start&&a?.end===end;}
 function currentFilters(){return {start:$('#reportStart').value,end:$('#reportEnd').value,sector:$('#sectorFilter').value,buyer:$('#buyerFilter').value,category:$('#categoryFilter').value,status:$('#statusFilter').value,search:$('#searchFilter').value};}
-function selected(){return selectDivergences(state.snapshot?.divs||[],currentFilters());}
+function selected(){
+  return filteredForChart('none');
+}
+// Recortes cruzados: cada gráfico mantém suas opções mesmo quando o próprio filtro
+// está ativo. Comprador/tipo/setor/categoria/data são independentes e 100% locais.
+function filteredForChart(excludeKind='none'){
+  const filters={...currentFilters()};
+  if(excludeKind==='buyer')filters.buyer='todos';
+  if(excludeKind==='sector')filters.sector='todos';
+  if(excludeKind==='category')filters.category='todas';
+  let rows=selectDivergences(state.snapshot?.divs||[],filters);
+  if(excludeKind!=='type' && state.typeFilter)rows=rows.filter(d=>(d.tipoNome||'Tipo não informado')===state.typeFilter);
+  if(excludeKind!=='day' && state.dayFilter)rows=rows.filter(d=>localDate(d.criadoEm||d.atualizadoEm)===state.dayFilter);
+  return rows;
+}
+const chartKeys={
+  buyer:buyer,
+  type:d=>d.tipoNome||'Tipo não informado',
+  sector:d=>d.setor||'Setor não informado',
+  category,
+  day:d=>localDate(d.criadoEm||d.atualizadoEm)||'Sem data'
+};
+function chartLabel(kind,key){
+  if(kind==='sector')return sectors[key]||key;
+  if(kind==='day' && /^\d{4}-\d{2}-\d{2}$/.test(key))return key.split('-').reverse().join('/');
+  return key;
+}
+function chartSelectedValue(kind){
+  const field={buyer:'#buyerFilter',sector:'#sectorFilter',category:'#categoryFilter'}[kind];
+  if(field)return $(field)?.value||'';
+  return kind==='type'?state.typeFilter:kind==='day'?state.dayFilter:'';
+}
+function chartItems(kind){
+  const getKey=chartKeys[kind];
+  const base=state.snapshot?.divs||[];
+  const all=[...new Set(base.map(getKey))];
+  const counts=new Map(countGroups(filteredForChart(kind),getKey).map(x=>[x.name,x.divergencias]));
+  return all.sort((a,b)=>((counts.get(b)||0)-(counts.get(a)||0))||chartLabel(kind,a).localeCompare(chartLabel(kind,b),'pt-BR'))
+    .map(name=>({name,label:chartLabel(kind,name),divergencias:counts.get(name)||0}));
+}
+
 function currentPasses(){return state.snapshot?.passes||[];}
 function metric(label,val,sub=''){return `<article class="report-number"><small>${esc(label)}</small><strong>${esc(String(val))}</strong><span>${esc(sub)}</span></article>`;}
 function sep(arr){return [...arr].filter(Boolean).join(', ')||'—';}
 function labelSector(s){return sectors[s]||s||'—';}
 function mapRows(rows){return rows.map(([key,v])=>({name:key,count:v.passagens,ms:v.ms,notes:v.notas.size})).sort((a,b)=>b.ms-a.ms);}
 function timeTable(title,map,translate=v=>v){const rows=mapRows([...map].map(([k,v])=>[translate(k),v]));return `<div class="time-block"><h3>${esc(title)}</h3><div class="table-wrap"><table class="nf-compact-table"><thead><tr><th>Responsável</th><th>Notas</th><th>Passagens</th><th>Tempo</th></tr></thead><tbody>${rows.map(x=>`<tr><td>${esc(x.name)}</td><td>${x.notes}</td><td>${x.count}</td><td>${duration(x.ms)}</td></tr>`).join('')||'<tr><td colspan="4">Nenhuma passagem encerrada no recorte.</td></tr>'}</tbody></table></div></div>`;}
-function chart(title,rows,kind){
-  const top=rows.slice(0,14),max=Math.max(1,...top.map(x=>x.divergencias));
-  return `<article class="nf-chart"><h3>${esc(title)}</h3>${top.map(x=>`<button type="button" class="nf-bar-row nf-bar-action" data-chart="${esc(kind)}" data-value="${esc(x.name)}" title="Filtrar por ${esc(x.name)} sem nova consulta"><span>${esc(x.name)}</span><div class="nf-bar-track"><i style="width:${Math.round(100*x.divergencias/max)}%"></i></div><strong>${x.divergencias}</strong></button>`).join('')||'<p class="muted">Sem dados.</p>'}</article>`;
-}
-// O navegador de compradores trabalha sempre com o pacote local inteiro.
-// Aplica os outros filtros (data, setor, categoria etc.) somente às CONTAGENS,
-// mas jamais esconde um comprador só porque outro está selecionado.
-function buyerDirectoryRows(){
-  const all=state.snapshot?.divs||[];
-  const f={...currentFilters(),buyer:'todos'};
-  const visibleCounts=new Map(countGroups(selectDivergences(all,f),buyer).map(x=>[x.name,x.divergencias]));
-  const names=[...new Set(all.map(buyer))].sort((a,b)=>{
-    if(a==='Não informado no registro')return 1;
-    if(b==='Não informado no registro')return -1;
-    return a.localeCompare(b,'pt-BR');
-  });
-  return names.map(name=>({name,divergencias:visibleCounts.get(name)||0}));
-}
-function renderBuyerDirectory(){
-  const rows=buyerDirectoryRows();
-  const active=$('#buyerFilter').value;
-  const totalInOtherFilters=rows.reduce((sum,row)=>sum+row.divergencias,0);
-  const max=Math.max(1,...rows.map(x=>x.divergencias));
-  const selectedName=active==='todos'?'Todos os compradores':active;
-  return `<article class="nf-chart nf-buyers-directory" id="buyerDirectory">
-    <div class="nf-buyer-heading"><div><h3>Compradores — escolha para filtrar</h3><p>Lista fixa dos dados baixados • ${rows.length} nome(s)</p></div><span class="nf-buyer-selection">${esc(selectedName)}</span></div>
-    <label class="nf-buyer-search-label" for="buyerDirectorySearch">Pesquisar comprador<input type="search" id="buyerDirectorySearch" placeholder="Digite um nome..." autocomplete="off" aria-label="Pesquisar comprador na cópia local"></label>
-    <div class="nf-buyer-list" id="buyerDirectoryList" role="group" aria-label="Filtrar por comprador">
-      <button type="button" class="nf-buyer-item nf-buyer-all${active==='todos'?' selected':''}" data-chart="buyer" data-value="todos" aria-pressed="${active==='todos'}" title="Exibir dados de todos os compradores"><span class="nf-buyer-name">Todos os compradores</span><strong>${totalInOtherFilters}</strong></button>
-      ${rows.map(row=>`<button type="button" class="nf-buyer-item${active===row.name?' selected':''}${row.divergencias===0?' no-matches':''}" data-chart="buyer" data-value="${esc(row.name)}" aria-pressed="${active===row.name}" title="${esc(row.name)} — ${row.divergencias} divergência(s) no recorte"><span class="nf-buyer-name">${esc(row.name)}</span><div class="nf-bar-track"><i style="width:${Math.round(100*row.divergencias/max)}%"></i></div><strong>${row.divergencias}</strong></button>`).join('')}
-    </div>
-    <p class="nf-buyer-empty hidden" id="buyerDirectoryEmpty">Nenhum comprador corresponde à pesquisa.</p>
-    <p class="nf-buyer-footnote">A lista permanece visível. Os números acompanham os outros filtros; selecionar um nome atualiza gráficos e notas sem acessar o Firebase.</p>
-  </article>`;
-}
-function filterBuyerDirectory(){
-  const list=$('#buyerDirectoryList');
-  if(!list)return;
-  const search=norm(state.buyerSearch);
-  let matching=0;
-  list.querySelectorAll('.nf-buyer-item:not(.nf-buyer-all)').forEach(btn=>{
-    const visible=!search||norm(btn.dataset.value).includes(search);
-    btn.hidden=!visible;
-    if(visible)matching++;
-  });
-  $('#buyerDirectoryEmpty')?.classList.toggle('hidden',matching>0||!search);
+function chart(title,kind){
+  const rows=chartItems(kind);
+  const active=chartSelectedValue(kind);
+  const empty=(kind==='buyer'?'Nenhum comprador no período.':'Nenhum dado no período.');
+  const max=Math.max(1,...rows.map(r=>r.divergencias));
+  return `<article class="nf-chart" data-chart-card="${kind}"><h3>${esc(title)}</h3><div class="nf-chart-options" data-list-kind="${kind}" role="group" aria-label="${esc(title)}">
+    ${rows.map(x=>`<button type="button" class="nf-bar-row nf-bar-action${active===x.name?' selected':''}${x.divergencias===0?' no-matches':''}" data-chart="${kind}" data-value="${esc(x.name)}" aria-pressed="${active===x.name}" title="${esc(x.label)} — clique novamente para remover o filtro"><span title="${esc(x.label)}">${esc(x.label)}</span><div class="nf-bar-track"><i style="width:${Math.round(100*x.divergencias/max)}%"></i></div><strong>${x.divergencias}</strong></button>`).join('')||`<p class="muted">${esc(empty)}</p>`}
+  </div></article>`;
 }
 function renderChoices(){
   const d=state.snapshot?.divs||[];
@@ -85,18 +91,18 @@ function renderChoices(){
 function renderReport(divs,metrics){
   if(!state.showCharts){$('#reportPanel').classList.add('hidden');return;}
   $('#reportPanel').classList.remove('hidden');
-  const previousScroll=$('#buyerDirectoryList')?.scrollTop||0;
+  const previousScroll=new Map([...document.querySelectorAll('#reportContent .nf-chart-options')]
+    .map(el=>[el.dataset.listKind,el.scrollTop]));
   const att=metrics.byAttribution;
   $('#reportContent').innerHTML=`<div class="report-grid">${metric('Passagens encerradas',metrics.passagens,'Relógios finalizados')}${metric('Tempo somado',duration(metrics.totalMs),'Com simultaneidades')}${metric('Tempo comercial',duration(att.get('comercial')?.ms||0),'Exclui erro CRF')}${metric('Tempo fiscal',duration(att.get('fiscal')?.ms||0),'Exclui erro CRF')}${metric('Tempo cadastro',duration(att.get('cadastro')?.ms||0),'Exclui erro CRF')}${metric('Retrabalho causado pela CRF',duration(att.get('crf_erro')?.ms||0),'Informações divergentes')}</div>
-    <div class="nf-chart-grid">${renderBuyerDirectory()}${chart('Divergências por tipo',metrics.types,'type')}${chart('Divergências por departamento',metrics.sectors.map(x=>({...x,name:labelSector(x.name)})),'sector')}${chart('Categorias da NF',metrics.categories,'category')}${chart('Divergências por data',metrics.days.map(x=>({...x,name:x.name==='Sem data'?x.name:x.name.split('-').reverse().join('/')})),'day')}</div>
+    <p class="nf-chart-hint">Clique em uma barra para filtrar. Clique na mesma novamente para remover. Combine os filtros como quiser.</p>
+    <div class="nf-chart-grid">${chart('Compradores','buyer')}${chart('Divergências por tipo','type')}${chart('Divergências por departamento','sector')}${chart('Categorias da NF','category')}${chart('Divergências por data','day')}</div>
     <div class="two-col">${timeTable('Tempo por departamento que recebeu',metrics.byReceived,labelSector)}${timeTable('Tempo atribuído no relatório',metrics.byAttribution,x=>x==='crf_erro'?'Erro CRF':labelSector(x))}</div>
     ${timeTable('Tempo por comprador — todos os setores',metrics.byBuyer)}
     <p class="help">Estatísticas calculadas localmente apenas com os documentos do pacote do período. O tempo acumulado soma passagens, não é o tempo de calendário de cada NF. O botão de atualização é a única consulta de dados.</p>`;
-  const searchInput=$('#buyerDirectorySearch');
-  if(searchInput)searchInput.value=state.buyerSearch;
-  const list=$('#buyerDirectoryList');
-  if(list)list.scrollTop=previousScroll;
-  filterBuyerDirectory();
+  document.querySelectorAll('#reportContent .nf-chart-options').forEach(el=>{
+    if(previousScroll.has(el.dataset.listKind))el.scrollTop=previousScroll.get(el.dataset.listKind);
+  });
 }
 function render(){
   const divs=selected(),notes=groupNotes(divs),metrics=reportMetrics(divs,currentPasses());
@@ -150,12 +156,13 @@ async function deleteSaved(uid){const dbx=await localDB();const all=await listSa
 function updateStatus(){
   const snap=state.snapshot;if(!snap){status('Sem pacote offline carregado. O Firebase só será consultado ao clicar Atualizar do Firebase.');return;}
   const when=new Date(snap.fetchedAt).toLocaleString('pt-BR');
-  status(`Pacote salvo • ${snap.start} a ${snap.end} • ${when} • ${snap.divs.length} divergências, ${snap.passes.length} passagens e ${snap.events.length} eventos • pronto para filtros offline`);
+  const localChange = snap.modificadoLocalmenteEm ? ` • resposta manual refletida localmente em ${new Date(snap.modificadoLocalmenteEm).toLocaleString('pt-BR')}` : '';
+  status(`Pacote salvo • ${snap.start} a ${snap.end} • ${when} • ${snap.divs.length} divergências, ${snap.passes.length} passagens e ${snap.events.length} eventos${localChange} • pronto para filtros offline`);
 }
 async function restoreSaved(){if(!state.uid)return;try{
   const all=await listSaved(state.uid);if(!all.length){updateStatus();return;}
   const exact=all.find(s=>sameScope(s,$('#reportStart').value,$('#reportEnd').value));
-  state.snapshot=exact||all[0];
+  state.snapshot=exact||all[0];state.typeFilter='';state.dayFilter='';
   if(!exact){$('#reportStart').value=state.snapshot.start;$('#reportEnd').value=state.snapshot.end;}
   refreshUi();updateStatus();
 }catch(e){status('A cópia local está indisponível neste navegador. A página ainda permite consultar o Firebase manualmente.');console.warn('[Comercial Offline]',e);}}
@@ -210,10 +217,84 @@ async function synchronize(){
       toast('O relatório foi baixado, mas não coube no armazenamento local; poderá ser perdido após fechar a página.',true);
       console.warn('[Comercial Offline] Falha ao persistir:',error);
     }
-    state.snapshot=snap;refreshUi();updateStatus();ok=true;
+    state.snapshot=snap;state.typeFilter='';state.dayFilter='';refreshUi();updateStatus();ok=true;
   }catch(e){fail(e);status('A sincronização falhou; mantive a cópia anterior. Nada foi apagado. Confira a conexão e as permissões do Firebase.');}
   finally{state.busy=false;$('#syncButton').disabled=false;}
   if(ok)toast('Pacote completo do período atualizado e pronto para consultas locais!');
+}
+// Depois de uma gravação manual concluída, corrigir o pacote local usando o mesmo
+// resultado confirmado pela transação. Nenhuma nova consulta ao Firestore.
+async function applyManualResult(info) {
+  const snap = state.snapshot;
+  if (!snap || !state.uid) return;
+  const divergence = snap.divs.find(d => d.id === info.divId);
+  const passage = snap.passes.find(p => p.id === info.passId);
+  if (!divergence || !passage) return;
+  divergence.passagemAbertaId = null;
+  divergence.status = 'respondida';
+  divergence.encerradoEm = info.time;
+  divergence.ultimaRespostaId = info.resposta.id;
+  divergence.ultimaRespostaNome = info.resposta.nome;
+  divergence.ultimaOcorrenciaTexto = info.text;
+  divergence.ultimaOcorrenciaEm = info.time;
+  divergence.atualizadoEm = info.registradoEm;
+  divergence.revisao = (Number(divergence.revisao) || 0) + 1;
+  passage.fimEm = info.time;
+  passage.fechadoPor = info.user.uid;
+  passage.fechamento = 'resposta';
+  passage.respostaId = info.resposta.id;
+  passage.respostaNome = info.resposta.nome;
+  passage.atribuicaoTempo = info.attributed;
+  snap.events.push({
+    id: info.eventId, chave: divergence.chave, divergenciaId: info.divId,
+    acao: 'responder', setor: info.setor, passagemId: info.passId,
+    compradorNome: divergence.compradorAtualNome || divergence.compradorNome || '',
+    respostaId: info.resposta.id, respostaNome: info.resposta.nome,
+    atribuicaoTempo: info.attributed, texto: info.text,
+    usuarioId: info.user.uid, usuarioNome: info.user.nome, usuarioEmail: info.user.email,
+    origem: 'site_manual', referencia: 'whatsapp',
+    ocorridoEm: info.time, registradoEm: info.registradoEm, criadoEm: info.registradoEm
+  });
+  snap.modificadoLocalmenteEm = Date.now();
+  try { await saveSnapshot(snap); } catch (e) {
+    console.warn('[Comercial] Resposta gravada no Firebase; falha ao atualizar pacote offline:', e);
+    toast('Resposta gravada! A cópia local não foi salva; clique Atualizar do Firebase depois.', true);
+  }
+  refreshUi();
+  if (state.noteKey === divergence.chave) showTimeline(divergence.chave);
+  updateStatus();
+}
+async function applyBuyerCorrection(info) {
+  const snap=state.snapshot;
+  if (!snap || !state.uid) return;
+  const divergence=snap.divs.find(d=>d.id===info.divId);
+  if (!divergence) return;
+  divergence.compradorId=info.newBuyerId;
+  divergence.compradorNome=info.newBuyerName;
+  divergence.compradorAtualId=info.newBuyerId;
+  divergence.compradorAtualNome=info.newBuyerName;
+  divergence.compradorCorrigidoEm=info.changedAt;
+  divergence.revisao=(Number(divergence.revisao)||0)+1;
+  for (const p of snap.passes.filter(p=>p.divergenciaId===info.divId)) {
+    p.compradorId=info.newBuyerId;
+    p.compradorNome=info.newBuyerName;
+  }
+  snap.events.push({
+    id:info.eventId,chave:divergence.chave,divergenciaId:info.divId,
+    acao:'corrigir_comprador',setor:divergence.setor,
+    compradorAnteriorId:info.oldBuyerId,compradorAnteriorNome:info.oldBuyerName,
+    compradorId:info.newBuyerId,compradorNome:info.newBuyerName,
+    motivo:info.reason, origem:'site_correcao_comprador',
+    texto:`Comprador corrigido: ${info.oldBuyerName} → ${info.newBuyerName}. Motivo: ${info.reason}`,
+    usuarioId:info.operator.uid,usuarioNome:info.operator.nome,usuarioEmail:info.operator.email,
+    criadoEm:info.changedAt,registradoEm:info.changedAt
+  });
+  snap.modificadoLocalmenteEm=Date.now();
+  try { await saveSnapshot(snap); }
+  catch(e) { console.warn('[Comercial] Comprador corrigido no servidor, mas pacote offline não foi salvo:',e); toast('Comprador corrigido, mas a cópia local não persistiu; atualize o pacote depois.',true); }
+  refreshUi();
+  if (state.noteKey===divergence.chave) showTimeline(divergence.chave);
+  updateStatus();
 }
 function showTimeline(key){
   const all=state.snapshot;
@@ -228,17 +309,34 @@ function showTimeline(key){
   for(const p of t.passages.filter(x=>x.fimEm)){const k=p.setor||'não informado';const v=timeBy.get(k)||{ms:0,passagens:0};v.ms+=elapsed(p.inicioEm,p.fimEm);v.passagens++;timeBy.set(k,v);}
   const emap=new Map(t.divergences.map(d=>[d.id,d]));
   $('#detailContent').innerHTML=`<div class="report-grid">${metric('Tempo pendente (sem sobreposição)',duration(t.pendingMs),'União dos relógios')}${metric('Calendário da NF',duration(t.calendarMs),'Pode incluir intervalos livres')}${metric('Soma das passagens',duration(t.sumMs),'Inclui passagens simultâneas')}${metric('Passagens',t.passages.length,'Da mesma nota')}</div>
-    <h3>Divergências da nota</h3><div class="nf-div-grid">${t.divergences.map(d=>`<article class="nf-div"><b>${esc(d.tipoNome||'—')}</b><span class="pill ${effectiveStatus(d)==='aberta'?'aberta':'concluida'}">${effectiveStatus(d)==='aberta'?'Aberta':'Respondida'}</span><small>${esc(labelSector(d.setor))} • ${esc(buyer(d))}</small><small>Resposta: ${esc(d.ultimaRespostaNome||'—')}</small></article>`).join('')}</div>
-    <h3>Histórico completo em ordem cronológica (${t.events.length} eventos)</h3><div class="timeline nf-timeline">${t.events.map(e=>{const d=emap.get(e.divergenciaId)||{};const p=passMap.get(e.passagemId);return `<article class="event nf-event"><strong>${esc(e.respostaNome || (e.acao==='abrir'?'Aberta':e.acao==='responder'?'Respondida':e.acao||'Evento'))} • ${dt(e.criadoEm)}</strong><span class="muted">${esc(d.tipoNome||'Divergência')} • ${esc(labelSector(e.setor||d.setor))} • ${esc(e.compradorNome||buyer(d))}</span><small class="muted">${esc(e.usuarioNome||e.usuarioEmail||'Operador')} • Chamado ${esc(e.chamadoInfradeskId||'—')}${p?.fimEm?' • '+duration(elapsed(p.inicioEm,p.fimEm)):''}</small><p>${esc(e.texto||'—')}</p></article>`;}).join('')||'<p>Não há eventos gravados para esta nota.</p>'}</div>
+    <h3>Divergências da nota</h3><div class="nf-div-grid">${t.divergences.map(d=>`<article class="nf-div"><b>${esc(d.tipoNome||'—')}</b><span class="pill ${effectiveStatus(d)==='aberta'?'aberta':'concluida'}">${effectiveStatus(d)==='aberta'?'Aberta':'Respondida'}</span><small>${esc(labelSector(d.setor))} • ${esc(buyer(d))}</small><small>Resposta: ${esc(d.ultimaRespostaNome||'—')}</small>${state.profile && ['admin','usuario','crf'].includes(state.profile.papel) ? `<div class="nf-div-actions">${effectiveStatus(d)==='aberta' && d.passagemAbertaId ? `<button class="btn primary small" type="button" data-manual-div="${esc(d.id)}">Registrar resposta pelo site</button>` : ''}<button class="btn outline small" type="button" data-buyer-correction="${esc(d.id)}">Corrigir comprador</button></div>` : ''}</article>`).join('')}</div>
+    <h3>Histórico completo em ordem cronológica (${t.events.length} eventos)</h3><div class="timeline nf-timeline">${t.events.map(e=>{const d=emap.get(e.divergenciaId)||{};const p=passMap.get(e.passagemId);return `<article class="event nf-event"><strong>${esc(e.respostaNome || (e.acao==='abrir'?'Aberta':e.acao==='responder'?'Respondida':e.acao==='corrigir_comprador'?'Comprador corrigido':e.acao||'Evento'))} • ${dt(e.ocorridoEm||e.criadoEm)}</strong>${e.origem==='site_manual'?`<small class="muted">Resposta informada do WhatsApp • Lançada no site em ${dt(e.registradoEm||e.criadoEm)}</small>`:''}<span class="muted">${esc(d.tipoNome||'Divergência')} • ${esc(labelSector(e.setor||d.setor))} • ${esc(e.compradorNome||buyer(d))}</span><small class="muted">${esc(e.usuarioNome||e.usuarioEmail||'Operador')} • Chamado ${esc(e.chamadoInfradeskId||'—')}${p?.fimEm?' • '+duration(elapsed(p.inicioEm,p.fimEm)):''}</small><p>${esc(e.texto||'—')}</p></article>`;}).join('')||'<p>Não há eventos gravados para esta nota.</p>'}</div>
     <h3>Passagens (${t.passages.length})</h3><div class="nf-pass-list">${t.passages.map(p=>`<article class="nf-passage"><b>${esc(labelSector(p.setor))}</b> ${p.compradorNome?' • '+esc(p.compradorNome):''}<small>${dt(p.inicioEm)} → ${p.fimEm?dt(p.fimEm):'Em andamento'}</small><small>${p.fimEm?duration(elapsed(p.inicioEm,p.fimEm)):'Relógio ativo'} • ${esc(p.respostaNome||'Aguardando resposta')}${p.atribuicaoTempo==='crf_erro'?' • Erro CRF':''}</small></article>`).join('')||'<p>Sem passagens.</p>'}</div>
     <p class="help">O histórico está disponível offline porque os eventos e passagens foram baixados durante a atualização do período. Os eventos e passagens de uma NF são baixados por chave, inclusive passagens de divergências antigas; a lista de divergências e os relatórios continuam filtrados pela data de abertura.</p>`;
   $('#detailOverlay').classList.remove('hidden');$('#closeDetail').focus();
 }
 function closeTimeline(){$('#detailOverlay').classList.add('hidden');state.noteKey='';}
-function setBuyer(name){
-  const select=$('#buyerFilter');
-  if(![...select.options].some(o=>o.value===name))return;
-  select.value=name;state.page=0;render();
+function toggleChartFilter(kind,value){
+  if(kind==='buyer'){
+    const field=$('#buyerFilter');
+    if(![...field.options].some(o=>o.value===value))return;
+    field.value=field.value===value?'todos':value;
+  } else if(kind==='sector'){
+    const field=$('#sectorFilter');
+    if(![...field.options].some(o=>o.value===value))return;
+    field.value=field.value===value?'todos':value;
+  } else if(kind==='category'){
+    const field=$('#categoryFilter');
+    if(![...field.options].some(o=>o.value===value))return;
+    field.value=field.value===value?'todas':value;
+  } else if(kind==='type'){
+    state.typeFilter=state.typeFilter===value?'':value;
+  } else if(kind==='day'){
+    if(value!=='Sem data' && !/^\d{4}-\d{2}-\d{2}$/.test(value))return;
+    state.dayFilter=state.dayFilter===value?'':value;
+  } else return;
+  state.page=0;
+  render();
 }
 function wire(){
   for(const id of ['#searchFilter','#sectorFilter','#statusFilter','#categoryFilter','#buyerFilter','#reportStart','#reportEnd']){
@@ -246,38 +344,45 @@ function wire(){
   }
   $('#syncButton').onclick=synchronize;
   $('#savedButton').onclick=async()=>{await restoreSaved();};
-  $('#clearSaved').onclick=async()=>{if(!state.uid)return;if(!confirm('Apagar todas as cópias locais do Comercial deste usuário neste navegador? Os dados do Firebase NÃO serão apagados.'))return;try{await deleteSaved(state.uid);state.snapshot=null;refreshUi();updateStatus();toast('Cópias locais apagadas; Firebase preservado.');}catch(e){fail(e);}};
+  $('#clearSaved').onclick=async()=>{if(!state.uid)return;if(!confirm('Apagar todas as cópias locais do Comercial deste usuário neste navegador? Os dados do Firebase NÃO serão apagados.'))return;try{await deleteSaved(state.uid);state.snapshot=null;state.typeFilter='';state.dayFilter='';refreshUi();updateStatus();toast('Cópias locais apagadas; Firebase preservado.');}catch(e){fail(e);}};
   $('#reportsButton').onclick=()=>{state.showCharts=!state.showCharts;$('#reportsButton').textContent=state.showCharts?'Ocultar relatório':'Mostrar relatório';render();};
   $('#closeReports').onclick=()=>{state.showCharts=false;$('#reportsButton').textContent='Mostrar relatório';render();};
   $('#clearBuyer').onclick=()=>{$('#buyerFilter').value='todos';state.page=0;render();};
   $('#prevPage').onclick=()=>{state.page=Math.max(0,state.page-1);render();};
   $('#nextPage').onclick=()=>{state.page++;render();};
   $('#noteRows').addEventListener('click',e=>{const key=e.target.closest('[data-note]')?.dataset.note;if(key)showTimeline(key);});
-  $('#reportContent').addEventListener('input',e=>{
-    if(e.target.id==='buyerDirectorySearch'){
-      state.buyerSearch=e.target.value;
-      filterBuyerDirectory(); // Não recalcula gráficos nem consulta Firebase durante a digitação.
-    }
+  $('#reportContent').addEventListener('click',e=>{
+    const btn=e.target.closest('button[data-chart]');
+    if(!btn)return;
+    toggleChartFilter(btn.dataset.chart,btn.dataset.value);
   });
-  $('#reportContent').addEventListener('click',e=>{const btn=e.target.closest('[data-chart]');if(!btn)return;const kind=btn.dataset.chart,value=btn.dataset.value;
-    if(kind==='buyer')setBuyer(value);
-    else if(kind==='sector'){$('#sectorFilter').value=Object.keys(sectors).find(k=>sectors[k]===value)||'todos';state.page=0;render();}
-    else if(kind==='category'){$('#categoryFilter').value=value;state.page=0;render();}
-    else if(kind==='type'){$('#searchFilter').value=value;state.page=0;render();}
-    else if(kind==='day'){
-      const iso=value.includes('/')?value.split('/').reverse().join('-'):value;
-      if(/^\d{4}-\d{2}-\d{2}$/.test(iso)){$('#reportStart').value=iso;$('#reportEnd').value=iso;state.page=0;render();}
-    }
+  $('#detailContent').addEventListener('click', e => {
+    const button = e.target.closest('[data-manual-div]');
+    if (button) manualResponder?.open(button.dataset.manualDiv);
+    const correction=e.target.closest('[data-buyer-correction]');
+    if (correction) buyerCorrection?.open(correction.dataset.buyerCorrection);
   });
   $('#closeDetail').onclick=closeTimeline;
   $('#detailOverlay').addEventListener('click',e=>{if(e.target===$('#detailOverlay'))closeTimeline();});
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('#detailOverlay').classList.contains('hidden'))closeTimeline();});
 }
+buyerCorrection = setupBuyerCorrection({
+  getSnapshot: () => state.snapshot,
+  getProfile: () => state.profile,
+  onSaved: applyBuyerCorrection,
+  toast
+});
+manualResponder = setupManualResponse({
+  getSnapshot: () => state.snapshot,
+  getProfile: () => state.profile,
+  onSaved: applyManualResult,
+  toast
+});
 $('#reportStart').value=dateToday(-7);$('#reportEnd').value=dateToday();wire();
 initAuthUI({onError:fail,onUser:async(u,p)=>{
-  state.user=u;state.profile=p;state.uid=p&&u?u.uid:'';state.snapshot=null;state.page=0;
+  state.user=u;state.profile=p;state.uid=p&&u?u.uid:'';state.snapshot=null;state.page=0;state.typeFilter='';state.dayFilter='';
   if(!state.uid){render();updateStatus();return;}
-  $('#userLine').textContent=`${p.nome||u.email} • ${p.papel} • Painel V2.5.1 offline`;
+  $('#userLine').textContent=`${p.nome||u.email} • ${p.papel} • Painel V2.5.7 offline`;
   $('#adminLink').classList.toggle('hidden',!isAdmin(p));
   await restoreSaved();
   const deepLink=new URLSearchParams(location.search).get('nf');

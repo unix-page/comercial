@@ -58,12 +58,12 @@ export function reportMetrics(divs,passages) {
 }
 export function noteTimeline(divs,events,passes,key,now=Date.now()) {
   const list=divs.filter(d=>d.chave===key);const related=new Set(list.map(d=>d.id));
-  const ee=events.filter(e=>e.chave===key||related.has(e.divergenciaId)).sort((a,b)=>ms(a.criadoEm)-ms(b.criadoEm));
+  const ee=events.filter(e=>e.chave===key||related.has(e.divergenciaId)).sort((a,b)=>ms(a.ocorridoEm||a.criadoEm)-ms(b.ocorridoEm||b.criadoEm));
   const pp=passes.filter(p=>p.chave===key||related.has(p.divergenciaId)).sort((a,b)=>ms(a.inicioEm)-ms(b.inicioEm));
   const ranges=pp.map(p=>({inicioEm:p.inicioEm,fimEm:p.fimEm||new Date(now)}));
   const first=Math.min(...[...list.map(d=>ms(d.criadoEm)),...pp.map(p=>ms(p.inicioEm))].filter(Boolean));
   const pending=pp.some(p=>!p.fimEm)||list.some(d=>effectiveStatus(d)==='aberta');
-  const last=pending?now:Math.max(...[...pp.map(p=>ms(p.fimEm)),...list.map(d=>ms(d.atualizadoEm))].filter(Boolean));
+  const last=pending?now:Math.max(...[...pp.map(p=>ms(p.fimEm)),...list.map(d=>ms(d.encerradoEm||d.ultimaOcorrenciaEm||d.atualizadoEm))].filter(Boolean));
   return {divergences:list,events:ee,passages:pp,pending,first:Number.isFinite(first)?first:0,last:Number.isFinite(last)?last:0,
     calendarMs:Number.isFinite(first)&&Number.isFinite(last)&&last>=first?last-first:0,
     pendingMs:unionMs(ranges),sumMs:pp.filter(p=>p.fimEm).reduce((s,p)=>s+elapsed(p.inicioEm,p.fimEm),0)};

@@ -31,4 +31,31 @@
 <section class="card" id="localDataPanel"><div class="section-head"><div><h2>Controle da cópia local</h2><p class="muted">Dados guardados no armazenamento deste navegador para consultas offline depois da sincronização.</p></div><button type="button" id="clearSaved" class="btn outline danger">Apagar dados salvos neste navegador</button></div><p class="help">Não use essa cópia em computadores compartilhados. Limpar os dados do navegador ou usar guia anônima pode apagá-la. As alterações feitas por outros usuários só aparecem após uma nova sincronização manual.</p></section>
 </main>
 <div class="nf-modal-backdrop hidden" id="detailOverlay" role="presentation"><div class="nf-modal card" role="dialog" aria-modal="true" aria-labelledby="detailTitle" tabindex="-1"><div class="section-head"><div><h2 id="detailTitle">Linha do tempo da NF</h2><p class="muted" id="detailSubtitle"></p></div><button class="btn outline" type="button" id="closeDetail">Fechar ✕</button></div><div id="detailContent"></div></div></div>
+<div class="nf-modal-backdrop hidden" id="manualResponseOverlay" role="presentation">
+  <div class="nf-modal card manual-response-modal" role="dialog" aria-modal="true" aria-labelledby="manualResponseTitle">
+    <div class="section-head"><div><h2 id="manualResponseTitle">Resposta manual</h2><p class="muted" id="manualResponseSubtitle"></p></div><button class="btn outline" type="button" id="closeManualResponse">Fechar ✕</button></div>
+    <p class="notice">Use este formulário quando o setor respondeu fora do Infradesk (por exemplo, WhatsApp). <strong>O horário informado encerrará o relógio da divergência</strong>; o sistema também guardará quando e por quem a resposta foi lançada.</p>
+    <p class="muted">Passagem aberta em <strong id="manualResponseStart">—</strong></p>
+    <form id="manualResponseForm" class="stack">
+      <label>Resposta recebida do setor<select id="manualResponseSelect" required><option value="">Selecione uma resposta</option></select></label>
+      <label>Data e hora em que o setor respondeu (WhatsApp)<input id="manualResponseAt" type="datetime-local" required></label>
+      <label><span id="manualResponseNoteLabel">Observação — opcional</span><textarea id="manualResponseNote" rows="3" maxlength="3000" placeholder="Ex.: Recebido no grupo do WhatsApp; pedido já corrigido."></textarea></label>
+      <p class="help">A data/hora não poderá ser anterior à abertura da divergência nem futura. O registro ficará identificado como <strong>lançamento manual pelo site</strong>, sem alterar o Infradesk nem o WhatsApp.</p>
+      <div class="manual-actions"><button class="btn outline" type="button" id="cancelManualResponse">Cancelar</button><button class="btn primary" type="submit" id="saveManualResponse">Registrar resposta e encerrar relógio</button></div>
+    </form>
+  </div>
+</div>
+<div class="nf-modal-backdrop hidden" id="buyerCorrectionOverlay" role="presentation">
+  <div class="nf-modal card buyer-correction-modal" role="dialog" aria-modal="true" aria-labelledby="buyerCorrectionTitle">
+    <div class="section-head"><div><h2 id="buyerCorrectionTitle">Corrigir comprador da divergência</h2><p class="muted" id="buyerCorrectionSubtitle"></p></div><button class="btn outline" type="button" id="closeBuyerCorrection">Fechar ✕</button></div>
+    <p class="notice">Esta correção altera a atribuição <strong>somente desta divergência</strong> e de suas passagens, inclusive para os relatórios. Não altera os horários, a resposta nem os vínculos cadastrados no fornecedor. Os eventos anteriores são preservados.</p>
+    <form id="buyerCorrectionForm" class="stack">
+      <p>Comprador registrado: <strong id="buyerCorrectionCurrent">—</strong></p>
+      <label>Comprador correto<select id="buyerCorrectionSelect" required><option value="">Selecione</option></select></label>
+      <label>Motivo da correção<textarea id="buyerCorrectionReason" rows="3" minlength="5" maxlength="500" required placeholder="Ex.: Ocorrência atribuída ao comprador errado na abertura."></textarea></label>
+      <p class="help">Serão mostrados todos os compradores ativos. Se o comprador não estiver vinculado ao CNPJ, faça esse vínculo separadamente no cadastro do fornecedor para próximas notas.</p>
+      <div class="manual-actions"><button class="btn outline" type="button" id="cancelBuyerCorrection">Cancelar</button><button class="btn primary" type="submit" id="saveBuyerCorrection">Confirmar comprador correto</button></div>
+    </form>
+  </div>
+</div>
 <script type="module" src="./script.js"></script></body></html>
