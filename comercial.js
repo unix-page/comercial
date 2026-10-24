@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.4.1
+// @name         Comercial • Infradesk • Registro de divergências V2.4.3
 // @namespace    comercial/infradesk
-// @version      2.4.1
+// @version      2.4.3
 // @description  Uma NF por chave; divergências independentes; cada resposta encerra uma passagem. Sem consultas automáticas por card.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
@@ -14,11 +14,11 @@
   'use strict';
   if (window.__COMERCIAL_APP_RUNNING__) return;
   if (!window.firebase?.auth || !window.firebase?.firestore) {
-    console.error('[Comercial V2.4.1] Firebase compat não encontrado. Confira o loader.');
+    console.error('[Comercial V2.4.3] Firebase compat não encontrado. Confira o loader.');
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.4.1';
+  window.__COMERCIAL_APP_VERSION__ = '2.4.3';
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
   const CONFIG = {
@@ -65,7 +65,8 @@
     card: null, data: null, supplier: null,
     divergences: [], selected: null, busy: false,
     viewToken: 0, mode: 'abrir', autoDetails: '',
-    visibleLookupBusy: false, visibleLookupAt: 0
+    visibleLookupBusy: false, visibleLookupAt: 0,
+    allBuyers: { items: [], expiresAt: 0, promise: null }, supplierSaving: false
   };
 
   function readCardCache() {
@@ -197,7 +198,7 @@
       }
       cards.forEach(renderCardFromCache);
     } catch(e) {
-      console.warn('[Comercial V2.4.1] Atualização de cards visíveis falhou:',e);
+      console.warn('[Comercial V2.4.3] Atualização de cards visíveis falhou:',e);
     } finally { state.visibleLookupBusy = false; }
   }
 
@@ -295,6 +296,131 @@
       .sort((a,b)=>(b.criadoEm?.toMillis?.()||0)-(a.criadoEm?.toMillis?.()||0));
     const ids = [...new Set((state.supplier?.compradorIds || []).filter(Boolean))];
     await Promise.all(ids.map(id => buyerRecord(id)));
+    updateManageSummary();
+  }
+  async function loadAllActiveBuyers(force=false) {
+    const now=Date.now();
+    if (!force && state.allBuyers.expiresAt>now) return state.allBuyers.items;
+    if (state.allBuyers.promise) return state.allBuyers.promise;
+    state.allBuyers.promise=(async()=>{
+      const snap=await db.collection('compradores_v2').get();
+      const items=snap.docs.map(d=>({id:d.id,...d.data()}))
+        .filter(b=>b.ativo!==false).sort((a,b)=>trim(a.nome).localeCompare(trim(b.nome),'pt-BR'));
+      state.allBuyers.items=items;
+      state.allBuyers.expiresAt=Date.now()+TTL;
+      items.forEach(b=>state.buyers.set(b.id,{value:b,expiresAt:Date.now()+TTL}));
+      return items;
+    })().finally(()=>{state.allBuyers.promise=null;});
+    return state.allBuyers.promise;
+  }
+  function getSupplierName() {
+    return trim(state.supplier?.razaoSocial || state.data?.fornecedorNome || '');
+  }
+  function updateManageSummary(){
+    const button=$('#cv-manage-buyers');
+    if (!button) return;
+    const buyers=activeBuyers();
+    button.textContent=`Vincular compradores ao CNPJ (${buyers.length})`;
+    button.disabled=!canRecord() || state.busy || state.supplierSaving;
+    const hint=$('#cv-supplier-hint');
+    if(hint) hint.textContent=buyers.length
+      ? `${buyers.map(b=>b.nome).join(' • ')}. Os vínculos valem para todos os setores.`
+      : 'Nenhum comprador ativo vinculado. Use o botão para escolher compradores e confirmar a razão social.';
+  }
+  function renderSupplierBuyerChoices(items,selectedIds) {
+    const search=trim($('#cv-manage-search')?.value||'').toLocaleLowerCase('pt-BR');
+    const list=$('#cv-manage-list');
+    if (!list) return;
+    // Filtrar só a apresentação; checkboxes mantêm seleção no estado da janela.
+    const filtered=items.filter(b=>trim(b.nome).toLocaleLowerCase('pt-BR').includes(search));
+    list.replaceChildren();
+    if (!filtered.length) {const p=document.createElement('p');p.textContent='Nenhum comprador ativo corresponde à busca.';list.append(p);return;}
+    for(const buyer of filtered){
+      const label=document.createElement('label');label.className='cv-manage-choice';
+      const cb=document.createElement('input');cb.type='checkbox';cb.value=buyer.id;cb.checked=selectedIds.has(buyer.id);
+      cb.addEventListener('change',()=>{if(cb.checked)selectedIds.add(buyer.id);else selectedIds.delete(buyer.id);});
+      const span=document.createElement('span');span.textContent=buyer.nome;
+      label.append(cb,span);list.append(label);
+    }
+  }
+  function closeSupplierManager(){
+    if(state.supplierSaving) return;
+    $('#cv-manage-overlay')?.classList.remove('open');
+  }
+  async function openSupplierManager(){
+    if (!canRecord() || !state.data || state.busy || state.supplierSaving) return;
+    const overlay=$('#cv-manage-overlay');
+    overlay.classList.add('open');
+    $('#cv-manage-list').textContent='Carregando compradores ativos...';
+    $('#cv-manage-cnpj').textContent=state.data.cnpj;
+    $('#cv-manage-name').value=getSupplierName();
+    $('#cv-manage-search').value='';
+    const token=state.viewToken;
+    try {
+      const buyers=await loadAllActiveBuyers();
+      if (token!==state.viewToken || !overlay.classList.contains('open')) return;
+      const ids=new Set(state.supplier?.compradorIds||[]);
+      // Armazena seleção sem depender do DOM filtrado.
+      state.managerSelected=ids;
+      renderSupplierBuyerChoices(buyers,ids);
+      $('#cv-manage-search').oninput=()=>renderSupplierBuyerChoices(buyers,ids);
+      $('#cv-manage-save').disabled=false;
+    }catch(e){
+      $('#cv-manage-list').textContent='Não foi possível carregar compradores: '+(e.message||e);
+      $('#cv-manage-save').disabled=true;
+    }
+  }
+  async function saveSupplierManager(){
+    if (!canRecord() || !state.data || state.busy || state.supplierSaving || !state.managerSelected) return;
+    const data=state.data;
+    const name=trim($('#cv-manage-name').value);
+    if(name.length<3 || name.length>200) return alertUser('Informe uma razão social com 3 a 200 caracteres.',true);
+    const permitted=new Set(state.allBuyers.items.map(b=>b.id));
+    const ids=[...state.managerSelected].filter(id=>permitted.has(id)).sort();
+    if(ids.length>60) return alertUser('Vínculos demais. Limite de 60 compradores por fornecedor.',true);
+    const supplierRef=db.collection('fornecedores_v2').doc(data.cnpj);
+    const eventRef=db.collection('eventos_v2').doc();
+    const beforeIds=(state.supplier?.compradorIds||[]).slice().sort();
+    const beforeName=getSupplierName();
+    if (JSON.stringify(ids)===JSON.stringify(beforeIds) && name===beforeName) {
+      closeSupplierManager();alertUser('Os vínculos e a razão social já estavam atualizados.');return;
+    }
+    state.supplierSaving=true;
+    const button=$('#cv-manage-save');button.disabled=true;button.textContent='Gravando...';
+    try{
+      await db.runTransaction(async tx=>{
+        const snap=await tx.get(supplierRef);
+        const old=snap.exists?snap.data():null;
+        const actualIds=(old?.compradorIds||[]).slice().sort();
+        if(JSON.stringify(actualIds)!==JSON.stringify(beforeIds) || trim(old?.razaoSocial||data.fornecedorNome)!==beforeName){
+          throw Error('Outro operador modificou este fornecedor. Atualize os dados e tente novamente.');
+        }
+        const now=FV.serverTimestamp();
+        const fields={cnpj:data.cnpj,razaoSocial:name,compradorIds:ids,origemRazaoSocial:name!==beforeName?'manual':(old?.origemRazaoSocial||'infradesk'),
+          atualizadoEm:now,atualizadoPor:state.user.uid};
+        if(old)tx.update(supplierRef,fields);
+        else tx.set(supplierRef,{...fields,nomeInfradesk:data.fornecedorNome,ativo:true,criadoEm:now});
+        const oldNames=beforeIds.map(id=>state.buyers.get(id)?.value?.nome || id);
+        const newNames=ids.map(id=>state.buyers.get(id)?.value?.nome || id);
+        tx.set(eventRef,{
+          chave:data.chave,divergenciaId:'',acao:'vinculo_comprador',setor:'',
+          texto:`Cadastro do fornecedor atualizado. Razão social: ${beforeName} → ${name}. Compradores anteriores: ${oldNames.join(', ')||'nenhum'}. Novos: ${newNames.join(', ')||'nenhum'}.`,
+          cnpj:data.cnpj,razaoSocialAnterior:beforeName,razaoSocialNova:name,
+          compradorIdsAnteriores:beforeIds,compradorIdsNovos:ids,
+          chamadoInfradeskId:data.chamadoInfradeskId||'',empresa:data.empresa||'',categoriaNota:data.categoriaNota||'',
+          usuarioId:state.user.uid,usuarioNome:trim(state.profile?.nome||state.user.displayName||state.user.email),usuarioEmail:state.user.email||'',criadoEm:now
+        });
+      });
+      // Consulta só dos vínculos recém-salvos; sem reler todos os fornecedores.
+      state.supplier={...(state.supplier||{}),cnpj:data.cnpj,razaoSocial:name,compradorIds:ids,origemRazaoSocial:name!==beforeName?'manual':(state.supplier?.origemRazaoSocial||'infradesk')};
+      updateManageSummary();
+      renderBuyers();
+      $('#cv-manage-overlay').classList.remove('open');
+      alertUser('Razão social e vínculos gravados. Comprador disponível para qualquer setor.');
+    }catch(e){
+      console.error('[Comercial V2.4.3] Erro ao vincular compradores:',e);
+      alertUser(e?.code==='permission-denied'?'Permissão negada. Publique as regras novas do Firestore para permitir manutenção por operadores CRF.':(e.message||'Erro ao salvar fornecedor.'),true);
+    }finally{state.supplierSaving=false;button.disabled=false;button.textContent='Salvar vínculos';}
   }
   function activeBuyers() {
     return (state.supplier?.compradorIds || [])
@@ -319,6 +445,14 @@
       .cv-session{padding:10px 12px;border-radius:12px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.cv-session.ok{background:#ecfdf3;color:#067647;border-color:#bbf7d0}.cv-session b{color:inherit}.cv-session small{color:inherit;opacity:.9}
       .cv-login-entry{padding:10px 12px;border:1px solid #dbeafe;background:#f8fafc;border-radius:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}.cv-login-entry span{font-size:11px;color:#64748b}
       .cv-login-help{font-size:11px;line-height:1.5;color:#64748b}
+      .cv-manage-toolbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+      .cv-manage-toolbar .cv-button{white-space:nowrap}
+      .cv-manage-overlay{display:none;position:fixed;inset:0;z-index:2147483646;background:#0f172abf;align-items:center;justify-content:center;padding:14px;font:13px system-ui;color:#172033}
+      .cv-manage-overlay.open{display:flex}.cv-manage-window{background:#fff;border-radius:16px;width:min(560px,100%);max-height:90vh;overflow:auto;box-shadow:0 22px 60px #0006;padding:18px;display:grid;gap:12px}
+      .cv-manage-window h3{margin:0;font-size:17px}.cv-manage-window p{margin:0;color:#64748b;font-size:12px}
+      .cv-manage-field{display:grid;gap:5px;font-weight:700;font-size:12px}.cv-manage-field input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #d4dce9;border-radius:9px;font:13px system-ui}
+      .cv-manage-list{max-height:270px;overflow:auto;padding:6px;border:1px solid #dbe3ee;border-radius:10px;display:grid;gap:1px}.cv-manage-choice{display:flex;align-items:center;gap:9px;padding:8px 10px;cursor:pointer;border-radius:7px;font-size:12px}.cv-manage-choice:hover{background:#fff1f7}.cv-manage-choice input{accent-color:#d91e74;width:16px;height:16px}
+      .cv-manage-buttons{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
       .cv-description{font-size:11px;color:#66768c;font-weight:400}.cv-pill{display:inline-flex;padding:3px 8px;border-radius:30px;background:#fff0f6;color:#a51d62;font-size:11px;font-weight:700}.cv-hidden{display:none!important}
       .comercial-box{clear:both;margin:9px 0 10px;padding:0;border:1px solid rgba(217,30,116,.18);background:#fff;border-radius:12px;color:#172033;font-size:12px;line-height:1.35;overflow:hidden;box-shadow:0 10px 22px rgba(15,23,42,.10)}.comercial-box-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 9px;font-weight:900;color:#fff;background:linear-gradient(135deg,#d91e74,#fb7185)}.comercial-box-title{display:inline-flex;align-items:center;gap:6px;min-width:0}.comercial-box-title img{width:18px;height:18px;border-radius:5px;flex:0 0 auto}.comercial-chip{display:inline-flex;align-items:center;border-radius:999px;padding:2px 7px;font-size:10px;font-weight:900;background:rgba(255,255,255,.96);color:#be185d;border:1px solid rgba(255,255,255,.65);white-space:nowrap}.comercial-box-body{padding:8px 9px 9px;background:#f8fafc;border-left:4px solid #d91e74}.comercial-last-text{margin-top:3px;padding:6px 7px;border-radius:9px;background:#fff;border:1px solid #e2e8f0;color:#334155;overflow-wrap:anywhere;white-space:pre-wrap}.comercial-box small{color:#64748b;display:block;margin-top:5px}.comercial-box.comercial-status-em_crf .comercial-box-head{background:linear-gradient(135deg,#2563eb,#38bdf8)}.comercial-box.comercial-status-respondida .comercial-box-head{background:linear-gradient(135deg,#067647,#12b76a)}.comercial-box.comercial-status-concluida .comercial-box-head{background:linear-gradient(135deg,#067647,#12b76a)}.comercial-box.comercial-status-devolucao .comercial-box-head{background:linear-gradient(135deg,#b42318,#ef4444)}
       .chamado-item[data-comercial-status='aberta']{border-left:4px solid #d91e74!important}.chamado-item[data-comercial-status='em_crf']{border-left:4px solid #2563eb!important}.chamado-item[data-comercial-status='respondida']{border-left:4px solid #12b76a!important}.chamado-item[data-comercial-status='concluida']{border-left:4px solid #12b76a!important}.chamado-item[data-comercial-status='devolucao']{border-left:4px solid #ef4444!important}@media(max-width:620px){.cv-grid{grid-template-columns:1fr}}
@@ -327,10 +461,11 @@
     const modal = document.createElement('div');
     modal.id = 'comercial-v2-modal'; modal.className = 'cv-backdrop';
     modal.innerHTML = `<div class="cv-window" role="dialog" aria-modal="true" aria-label="Comercial V2">
-      <div class="cv-header"><img src="${ICON}" alt=""><div><strong>Abrir Comercial</strong><small>NF • Divergência Comercial</small></div><button class="cv-button" id="cv-close" type="button">✕</button></div>
+      <div class="cv-header"><img src="${ICON}" alt=""><div><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.4.3</span></small></div><button class="cv-button" id="cv-close" type="button">✕</button></div>
       <div class="cv-content">
         <div class="cv-info" id="cv-info"></div>
         <a id="cv-history-link" class="cv-button" style="text-align:center;display:block;text-decoration:none" target="_blank" rel="noopener noreferrer" href="https://unix-page.github.io/comercial/">Ver linha do tempo completa desta NF ↗</a>
+        <div class="cv-manage-toolbar"><button type="button" class="cv-button" id="cv-manage-buyers">Vincular compradores ao CNPJ</button><span id="cv-supplier-hint" class="cv-hint">Carregando fornecedor...</span></div>
         <div class="cv-session"><div id="cv-session-text">Verificando login do Comercial...</div><button type="button" class="cv-button cv-hidden" id="cv-logout">Sair / trocar conta</button></div>
         <div id="cv-login-entry" class="cv-login-entry cv-hidden"><button type="button" id="cv-login-toggle" class="cv-button primary">Entrar no Comercial</button><span>Login independente do Infradesk e do Xabuia.</span></div>
         <div id="cv-login" class="cv-login cv-hidden">
@@ -352,6 +487,21 @@
       <div class="cv-buttons"><button type="button" class="cv-button" id="cv-refresh">Atualizar dados desta nota</button><button type="button" class="cv-button" id="cv-cancel">Cancelar</button><button type="button" class="cv-button primary" id="cv-save">Salvar ocorrência</button></div>
     </div>`;
     document.body.appendChild(modal);
+    const manage=document.createElement('div');
+    manage.id='cv-manage-overlay';manage.className='cv-manage-overlay';
+    manage.innerHTML=`<div class="cv-manage-window" role="dialog" aria-modal="true" aria-label="Compradores do fornecedor">
+      <h3>Compradores vinculados ao CNPJ</h3><p>CNPJ: <b id="cv-manage-cnpj"></b>. Vínculos válidos para divergências Comercial, Fiscal e Cadastro.</p>
+      <label class="cv-manage-field">Razão social cadastrada<input id="cv-manage-name" maxlength="200" placeholder="Razão social do fornecedor"></label>
+      <label class="cv-manage-field">Pesquisar compradores ativos<input id="cv-manage-search" placeholder="Digite o nome para filtrar, sem perder as seleções"></label>
+      <div id="cv-manage-list" class="cv-manage-list"></div>
+      <p>Marque para vincular e desmarque para desvincular. Registros históricos anteriores não são reclassificados automaticamente. <a href="https://unix-page.github.io/comercial/admin.html" target="_blank" rel="noopener noreferrer">Cadastrar novo comprador no administrador ↗</a></p>
+      <div class="cv-manage-buttons"><button id="cv-manage-cancel" class="cv-button" type="button">Cancelar</button><button id="cv-manage-save" class="cv-button primary" type="button">Salvar vínculos</button></div>
+    </div>`;
+    document.body.appendChild(manage);
+    $('#cv-manage-buyers').onclick=openSupplierManager;
+    $('#cv-manage-cancel').onclick=closeSupplierManager;
+    $('#cv-manage-save').onclick=saveSupplierManager;
+    manage.addEventListener('click',e=>{if(e.target===manage)closeSupplierManager();});
     $('#cv-close').onclick = close;
     $('#cv-cancel').onclick = close;
     $('#cv-div').onchange = renderSelected;
@@ -365,7 +515,7 @@
     $('#cv-refresh').onclick = async () => {
       if (!state.data || state.busy) return;
       $('#cv-refresh').disabled = true;
-      try { await loadProfile(true); state.catalog.expiresAt = 0; state.buyers.clear(); await loadForm(); alertUser('Cadastros e divergências atualizados.'); }
+      try { await loadProfile(true); state.catalog.expiresAt = 0; state.buyers.clear(); state.allBuyers.expiresAt=0; await loadForm(); alertUser('Cadastros e divergências atualizados.'); }
       catch(e) { alertUser(e.message || 'Não foi possível atualizar.',true); }
       finally { $('#cv-refresh').disabled = false; }
     };
@@ -503,6 +653,7 @@
     $('#comercial-v2-modal')?.classList.remove('open');
     clearLoginFields();
     state.card = null; state.data = null; state.selected = null; state.viewToken++;
+    $('#cv-manage-overlay')?.classList.remove('open');
   }
   async function openCard(card) {
     const data = extract(card);
@@ -554,6 +705,7 @@
   async function loadForm() {
     const allowed = canRecord();
     renderSession();
+    updateManageSummary();
     $('#cv-login-entry').classList.toggle('cv-hidden', !!(state.user && state.profile && state.profile.ativo !== false));
     if (state.user) clearLoginFields();
     $('#cv-form').classList.toggle('cv-hidden',!allowed);
@@ -600,7 +752,7 @@
     $('#cv-target').classList.toggle('cv-hidden',!opening);
     $('#cv-type-wrap').classList.toggle('cv-hidden',!opening);
     $('#cv-response-wrap').classList.toggle('cv-hidden',!responding);
-    $('#cv-buyer-wrap').classList.toggle('cv-hidden',!opening || $('#cv-sector').value!=='comercial');
+    $('#cv-buyer-wrap').classList.toggle('cv-hidden',!opening);
     $('#cv-details-wrap').classList.toggle('cv-hidden',closed);
     $('#cv-save').classList.toggle('cv-hidden',closed);
     $('#cv-save').disabled = closed || !canRecord();
@@ -655,8 +807,7 @@
     return response.efeito === 'devolver' || (name.includes('devolver') && name.includes('recusar'));
   }
   function renderBuyers() {
-    const sector=$('#cv-sector').value;
-    $('#cv-buyer-wrap').classList.toggle('cv-hidden',sector!=='comercial' || state.mode!=='abrir');
+    $('#cv-buyer-wrap').classList.toggle('cv-hidden',state.mode!=='abrir');
     const select=$('#cv-buyer');
     const current=select.value, buyers=activeBuyers();
     select.replaceChildren(new Option(buyers.length ? 'Selecione o comprador' : 'Nenhum comprador ativo vinculado',''));
@@ -701,8 +852,8 @@
     if (!opening && (!old || !old.passagemAbertaId)) return alertUser('Esta divergência não tem relógio aberto. Atualize os dados.',true);
     if (opening && (!type || type.ativo===false || type.setor!==sector)) return alertUser('Escolha um tipo de divergência ativo deste setor.',true);
     if (opening && !sectors[sector]) return alertUser('Escolha o setor responsável.',true);
-    if (opening && sector==='comercial' && (!buyer || buyer.ativo===false || !(state.supplier?.compradorIds||[]).includes(buyerId))) {
-      return alertUser('Selecione um comprador ativo vinculado ao CNPJ.',true);
+    if (opening && (!buyer || buyer.ativo===false || !(state.supplier?.compradorIds||[]).includes(buyerId))) {
+      return alertUser('Associe este CNPJ a um comprador ativo e selecione-o. Vale para qualquer setor: Comercial, Fiscal e Cadastro.',true);
     }
     const responseSector=old?.setorAtual||old?.setor;
     if (!opening && (!response || response.ativo===false || response.setor!==responseSector)) {
@@ -761,7 +912,7 @@
         if (!nSnap.exists) tx.set(noteRef,{...noteData,criadoEm:now,divergenciasCount:opening?1:0});
         else tx.update(noteRef,{...noteData,...(opening?{divergenciasCount:FV.increment(1)}:{})});
 
-        const buyerName=opening&&sector==='comercial'?(buyer?.nome||''):'';
+        const buyerName=opening?(buyer?.nome||''):'';
         if (opening) {
           tx.set(divRef,{
             chave:data.chave,cnpj:data.cnpj,numeroNf:data.numeroNf,fornecedorNome:supplierName,
@@ -774,7 +925,7 @@
           });
           tx.set(nextPassRef,{
             chave:data.chave,divergenciaId:divRef.id,setor:sector,
-            compradorId:sector==='comercial'?buyerId:'',compradorNome:buyerName,
+            compradorId:buyerId,compradorNome:buyerName,
             inicioEm:now,fimEm:null,criadoPor:state.user.uid,criadoPorNome:opName,
             chamadoInfradeskId:data.chamadoInfradeskId||''
           });
@@ -811,7 +962,7 @@
       alertUser(opening?'Divergência aberta. O relógio iniciou.':'Resposta registrada. Divergência respondida; relógio encerrado.');
       close(true);
     } catch(e) {
-      console.error('[Comercial V2.4.1] Erro ao salvar:',e);
+      console.error('[Comercial V2.4.3] Erro ao salvar:',e);
       alertUser(e?.code==='permission-denied'?'Acesso negado. Verifique as regras do Firestore.':(e.message||'Falha ao salvar'),true);
     } finally {
       state.busy=false;
@@ -848,7 +999,8 @@
   });
   function boot() {
     createUI();scan();observer.observe(document.body,{childList:true,subtree:true});
-    console.info('[Comercial V2.4.1] Pronto. Cards consultam apenas chaves visíveis, sem listeners em tempo real.');
+    console.info('[Comercial V2.4.3] Diagnóstico:', { versao: window.__COMERCIAL_APP_VERSION__, botaoVinculos: Boolean(document.getElementById('cv-manage-buyers')), painelVinculos: Boolean(document.getElementById('cv-manage-overlay')) });
+    console.info('[Comercial V2.4.3] Pronto. Cards consultam apenas chaves visíveis, sem listeners em tempo real.');
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
