@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.3
+// @name         Comercial • Infradesk • Registro de divergências V2.3.1
 // @namespace    comercial/infradesk
-// @version      2.3.0
+// @version      2.3.1
 // @description  Uma NF por chave; divergências independentes; cada resposta encerra uma passagem. Sem consultas automáticas por card.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
@@ -14,11 +14,11 @@
   'use strict';
   if (window.__COMERCIAL_APP_RUNNING__) return;
   if (!window.firebase?.auth || !window.firebase?.firestore) {
-    console.error('[Comercial V2.3] Firebase compat não encontrado. Confira o loader.');
+    console.error('[Comercial V2.3.1] Firebase compat não encontrado. Confira o loader.');
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.3.0';
+  window.__COMERCIAL_APP_VERSION__ = '2.3.1';
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
   const CONFIG = {
@@ -48,7 +48,7 @@
     buyers: new Map(),
     card: null, data: null, supplier: null,
     divergences: [], selected: null, busy: false,
-    viewToken: 0, mode: 'abrir'
+    viewToken: 0, mode: 'abrir', autoDetails: ''
   };
 
   function parseKey(v) {
@@ -161,15 +161,16 @@
       .cv-content label{display:grid;gap:5px;font-size:12px;font-weight:700}.cv-content select,.cv-content input,.cv-content textarea{box-sizing:border-box;width:100%;padding:9px 10px;color:#162238;background:white;border:1px solid #d4dce9;border-radius:8px;font:13px system-ui}
       .cv-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.cv-card{padding:10px 12px;border:1px solid #e6eaf1;border-radius:9px;background:#f8fafc;line-height:1.55}
       .cv-hint{font-size:11px;color:#65758b;line-height:1.5}.cv-buttons{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid #e6eaf1;flex-wrap:wrap}.cv-button{padding:9px 12px;border:1px solid #d6deea;background:white;color:#1a2941;border-radius:8px;font:700 12px system-ui;cursor:pointer}.cv-button:disabled{opacity:.55;cursor:not-allowed}.cv-button.primary{background:#d91e74;border-color:#d91e74;color:#fff}.cv-login{display:grid;gap:10px;padding:12px;border:1px solid #dce4ee;border-radius:10px}
-      .cv-pill{display:inline-flex;padding:3px 8px;border-radius:30px;background:#fff0f6;color:#a51d62;font-size:11px;font-weight:700}.cv-hidden{display:none!important}@media(max-width:620px){.cv-grid{grid-template-columns:1fr}}
+      .cv-session{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;background:#f3f7fc;border:1px solid #dbe3ee;border-radius:9px;font-size:12px;flex-wrap:wrap}.cv-session b{color:#14213d}.cv-session small{color:#5c6a7c}.cv-description{font-size:11px;color:#66768c;font-weight:400}.cv-pill{display:inline-flex;padding:3px 8px;border-radius:30px;background:#fff0f6;color:#a51d62;font-size:11px;font-weight:700}.cv-hidden{display:none!important}@media(max-width:620px){.cv-grid{grid-template-columns:1fr}}
     `;
     document.head.appendChild(style);
     const modal = document.createElement('div');
     modal.id = 'comercial-v2-modal'; modal.className = 'cv-backdrop';
     modal.innerHTML = `<div class="cv-window" role="dialog" aria-modal="true" aria-label="Comercial V2">
-      <div class="cv-header"><img src="${ICON}" alt=""><div><strong>Comercial — Ocorrências</strong><small>V2.3 • Divergências e respostas por setor</small></div><button class="cv-button" id="cv-close" type="button">✕</button></div>
+      <div class="cv-header"><img src="${ICON}" alt=""><div><strong>Comercial — Ocorrências</strong><small>V2.3.1 • Divergências e respostas por setor</small></div><button class="cv-button" id="cv-close" type="button">✕</button></div>
       <div class="cv-content">
         <div class="cv-info" id="cv-info"></div>
+        <div class="cv-session"><div id="cv-session-text">Verificando login do Comercial...</div><button type="button" class="cv-button cv-hidden" id="cv-logout">Sair / trocar conta</button></div>
         <div id="cv-login" class="cv-login cv-hidden"><strong id="cv-login-status">Entre no Comercial</strong><div class="cv-grid"><input id="cv-email" type="email" placeholder="E-mail"><input id="cv-pass" type="password" placeholder="Senha"></div><div><button class="cv-button" id="cv-email-login" type="button">Entrar com e-mail</button> <button class="cv-button" id="cv-google-login" type="button">Entrar com Google</button></div></div>
         <div id="cv-form" class="cv-hidden" style="display:grid;gap:12px">
           <label>Qual divergência você quer movimentar?<select id="cv-div"><option value="">+ Nova divergência</option></select></label>
@@ -178,7 +179,7 @@
           <div class="cv-grid" id="cv-target"><label>Setor para encaminhamento<select id="cv-sector"><option value="">Selecione</option><option value="comercial">Comercial</option><option value="fiscal">Fiscal (Sicofe)</option><option value="cadastro">Cadastro</option></select></label><label id="cv-type-wrap">Tipo de divergência<select id="cv-type"><option value="">Selecione</option></select></label></div>
           <label id="cv-buyer-wrap">Comprador responsável<select id="cv-buyer"><option value="">Selecione</option></select></label>
           <label id="cv-response-wrap" class="cv-hidden">Resposta recebida do setor<select id="cv-response"><option value="">Selecione uma resposta</option></select></label>
-          <label>Observação / detalhes<textarea id="cv-text" rows="3" placeholder="Descreva o encaminhamento, retorno ou a conferência..."></textarea></label>
+          <label><span id="cv-details-title">Observação / detalhes (opcional)</span><textarea id="cv-text" rows="3" placeholder="Observação adicional, se necessário..."></textarea><span id="cv-description-preview" class="cv-description"></span></label>
           <p class="cv-hint" id="cv-hint">Registrar no Comercial não altera o chamado original do Infradesk.</p>
         </div>
       </div>
@@ -190,6 +191,8 @@
     $('#cv-div').onchange = renderSelected;
     $('#cv-action').onchange = renderMode;
     $('#cv-sector').onchange = () => { renderTypes(); renderBuyers(); };
+    $('#cv-type').onchange = fillTypeDescription;
+    $('#cv-response').onchange = renderResponseDetailRequirement;
     $('#cv-google-login').onclick = async () => {
       const b = $('#cv-google-login'); b.disabled = true;
       try {
@@ -211,6 +214,19 @@
       finally { $('#cv-refresh').disabled = false; }
     };
     $('#cv-save').onclick = save;
+    $('#cv-logout').onclick = async () => {
+      if (state.busy) return;
+      const button = $('#cv-logout');
+      button.disabled = true;
+      try {
+        await auth.signOut();
+        state.user = null; state.profile = null; state.profileAt = 0;
+        state.catalog.expiresAt = 0; state.buyers.clear();
+        await loadForm();
+        alertUser('Sessão do Comercial encerrada. Escolha como entrar.');
+      } catch (e) { alertUser('Não consegui sair: ' + (e.message || 'erro desconhecido'), true); }
+      finally { button.disabled = false; }
+    };
   }
   function googleError(e) {
     const messages={
@@ -222,8 +238,8 @@
     };
     return messages[e?.code] || e?.message || 'Não foi possível entrar com Google.';
   }
-  function close() {
-    if (state.busy) return;
+  function close(force = false) {
+    if (state.busy && force !== true) return;
     $('#comercial-v2-modal')?.classList.remove('open');
     state.card = null; state.data = null; state.selected = null; state.viewToken++;
   }
@@ -231,24 +247,47 @@
     const data = extract(card);
     if (!data) { alertUser('Chave de NF-e ausente ou inválida. Confira os 44 dígitos.',true); return; }
     const token = ++state.viewToken;
-    state.card = card; state.data = data; state.selected = null;
+    state.card = card; state.data = data; state.selected = null; state.autoDetails = '';
     $('#cv-info').innerHTML = `<b>Chamado:</b> ${escape(data.chamadoInfradeskId||'—')} • <b>NF:</b> ${escape(data.numeroNf)} • <b>CNPJ:</b> ${escape(data.cnpj)}<br><b>Fornecedor no Infradesk:</b> ${escape(data.fornecedorNome)}<br><b>Chave:</b> ${escape(data.chave)}`;
     $('#cv-text').value = '';
     $('#comercial-v2-modal').classList.add('open');
     $('#cv-form').classList.add('cv-hidden');
     $('#cv-save').disabled = true;
+    renderSession();
     try {
       await loadProfile();
       if (token !== state.viewToken) return;
       await loadForm();
-    } catch(e) { console.error('[Comercial V2.3] Abrir:',e); alertUser(e.message||'Não foi possível carregar a nota.',true); }
+    } catch(e) { console.error('[Comercial V2.3.1] Abrir:',e); alertUser(e.message||'Não foi possível carregar a nota.',true); }
+  }
+  function renderSession() {
+    const user = state.user || auth.currentUser;
+    const profile = state.profile;
+    const line = $('#cv-session-text');
+    if (!line) return;
+    const logout = $('#cv-logout');
+    logout?.classList.toggle('cv-hidden', !user);
+    if (!user) {
+      line.textContent = 'Você ainda não entrou no Comercial. Use Google ou e-mail/senha abaixo.';
+      return;
+    }
+    const nome = trim(profile?.nome || user.displayName || user.email || 'Usuário');
+    const email = trim(user.email || '');
+    const papel = trim(profile?.papel || 'sem perfil');
+    line.replaceChildren();
+    const strong = document.createElement('b');
+    strong.textContent = 'Conectado como: ' + nome;
+    const small = document.createElement('small');
+    small.textContent = ' • ' + email + ' • Perfil: ' + papel;
+    line.append(strong, small);
   }
   async function loadForm() {
     const allowed = canRecord();
+    renderSession();
     $('#cv-login').classList.toggle('cv-hidden',allowed);
     $('#cv-form').classList.toggle('cv-hidden',!allowed);
     $('#cv-save').disabled = !allowed;
-    $('#cv-login-status').textContent = !state.user ? 'Entre no Comercial' : !state.profile ? 'Seu UID não tem perfil em usuarios' : state.profile.ativo === false ? 'Conta inativa' : 'Sem permissão para registrar eventos';
+    $('#cv-login-status').textContent = !state.user ? 'Entre no Comercial' : !state.profile ? 'Conta conectada sem perfil em usuarios. Use Sair / trocar conta para escolher outra.' : state.profile.ativo === false ? 'Conta inativa' : 'Este perfil não pode registrar eventos';
     if (!allowed) return;
     await Promise.all([loadCatalog(),loadNote()]);
     const dropdown=$('#cv-div');
@@ -292,11 +331,20 @@
       renderTypes(); renderBuyers();
     }
     if (response) renderResponses();
+    if (mode !== 'abrir' && state.autoDetails && trim($('#cv-text').value) === state.autoDetails) {
+      $('#cv-text').value = '';
+      state.autoDetails = '';
+    }
+    const needsDetail = mode === 'devolver' || (response && isDevolverResponse(selectedResponse()));
+    $('#cv-details-title').textContent = needsDetail ? 'Observação / detalhes (obrigatória para devolver e recusar)' : 'Observação / detalhes (opcional)';
+    $('#cv-text').required = needsDetail;
+    $('#cv-description-preview').textContent = '';
+    if (mode === 'abrir') fillTypeDescription();
     $('#cv-hint').textContent = response ? 'Qualquer resposta ativa deste setor encerra a passagem e para o relógio. “Informações divergentes” atribui esse período ao retrabalho por erro da CRF. Não encerra automaticamente a divergência.' :
       target ? 'Ao salvar será iniciada uma nova passagem. A classificação original da divergência não muda. O Comercial não modifica o status do Infradesk.' :
       mode==='observacao' ? 'Esta observação não muda a situação nem inicia/encerra relógio.' :
       'Esta ação é da CRF e somente fica disponível sem passagem ativa.';
-    $('#cv-text').placeholder = response ? 'Detalhes do retorno (opcional se uma resposta foi selecionada)' : 'Informe detalhes do encaminhamento ou ocorrência...';
+    $('#cv-text').placeholder = needsDetail ? 'Explique o motivo da devolução ou recusa (obrigatório)' : 'Observação adicional, se necessário (opcional)';
   }
   function renderTypes() {
     const select=$('#cv-type');
@@ -306,6 +354,31 @@
       .sort((a,b)=>trim(a.nome).localeCompare(trim(b.nome),'pt-BR'))
       .forEach(t=>select.add(new Option(t.nome,t.id)));
     if ([...select.options].some(x=>x.value===existing)) select.value=existing;
+    if (state.mode === 'abrir') fillTypeDescription();
+  }
+  function fillTypeDescription() {
+    const textarea = $('#cv-text');
+    if (!textarea || state.mode !== 'abrir') return;
+    const typeId = $('#cv-type').value;
+    const type = state.catalog.types.find(x => x.id === typeId);
+    const description = trim(type?.descricao || '');
+    // Não sobrescrever uma observação que o operador digitou manualmente.
+    const current = trim(textarea.value);
+    if (!current || (state.autoDetails && current === state.autoDetails)) {
+      textarea.value = description;
+      state.autoDetails = description;
+    }
+    $('#cv-description-preview').textContent = description
+      ? 'Descrição sugerida a partir do cadastro da divergência. Você pode alterar ou apagar.'
+      : (type ? 'Esta divergência não tem descrição no cadastro. A observação é opcional.' : 'Selecione o tipo para carregar uma descrição, se existir.');
+  }
+  function selectedResponse() {
+    return state.catalog.responses.find(x => x.id === $('#cv-response').value) || null;
+  }
+  function isDevolverResponse(response) {
+    if (!response) return false;
+    const name = trim(response.nome).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    return response.efeito === 'devolver' || (name.includes('devolver') && name.includes('recusar'));
   }
   function renderBuyers() {
     const sector=$('#cv-sector').value;
@@ -320,6 +393,13 @@
     else if (buyers.length===1) select.value=buyers[0].id;
     // Nova divergência com 2+ compradores: seleção em branco, obrigatória.
   }
+  function renderResponseDetailRequirement() {
+    if (state.mode !== 'responder') return;
+    const mandatory = isDevolverResponse(selectedResponse());
+    $('#cv-details-title').textContent = mandatory ? 'Observação / detalhes (obrigatória para devolver e recusar)' : 'Observação / detalhes (opcional)';
+    $('#cv-text').required = mandatory;
+    $('#cv-text').placeholder = mandatory ? 'Explique o motivo da devolução ou recusa (obrigatório)' : 'Observação adicional, se necessário (opcional)';
+  }
   function renderResponses() {
     const sector=state.selected?.setorAtual || state.selected?.setor;
     const select=$('#cv-response');
@@ -327,6 +407,7 @@
     state.catalog.responses.filter(r=>r.ativo!==false && r.setor===sector)
       .sort((a,b)=>trim(a.nome).localeCompare(trim(b.nome),'pt-BR'))
       .forEach(r=>select.add(new Option(r.nome,r.id)));
+    renderResponseDetailRequirement();
   }
   async function save() {
     if (state.busy || !canRecord() || !state.data) return;
@@ -344,8 +425,21 @@
     if (forwarding && !sectors[sector]) return alertUser('Escolha o setor responsável.',true);
     if (forwarding && sector==='comercial' && (!buyer || buyer.ativo===false || !(state.supplier?.compradorIds||[]).includes(buyerId))) return alertUser('Selecione um comprador ativo vinculado ao CNPJ.',true);
     if (action==='responder' && (!response || response.ativo===false || response.setor !== (old?.setorAtual||old?.setor))) return alertUser('Escolha uma resposta ativa do setor que recebeu a nota.',true);
-    if (action==='responder' && !details) details=`Resposta recebida: ${response.nome}`;
-    if (!details) return alertUser('Informe uma observação antes de salvar.',true);
+    if ((action === 'devolver' || (action === 'responder' && isDevolverResponse(response))) && !details) {
+      return alertUser('Para Devolver e recusar, informe obrigatoriamente o motivo na observação.', true);
+    }
+    // Um evento precisa de texto legível, mas não exige digitação do operador.
+    if (!details) {
+      const fallback = {
+        abrir: `Divergência aberta: ${type?.nome || 'não informada'}.`,
+        encaminhar: `Reencaminhada a ${sectors[sector] || sector}.`,
+        reabrir: `Divergência reaberta e encaminhada a ${sectors[sector] || sector}.`,
+        responder: `Resposta recebida: ${response?.nome || 'não informada'}.`,
+        concluir: 'Divergência concluída após validação da CRF.',
+        observacao: 'Acompanhamento registrado pela CRF.'
+      };
+      details = fallback[action] || 'Ocorrência registrada.';
+    }
 
     state.busy=true; $('#cv-save').disabled=true; $('#cv-save').textContent='Gravando...';
     const noteRef=db.collection('notas_v2').doc(data.chave);
@@ -395,7 +489,7 @@
         if (!prior) tx.set(divRef,{
           chave:data.chave,cnpj:data.cnpj,numeroNf:data.numeroNf,fornecedorNome:supplierName,
           criadoEm:now,atualizadoEm:now,abertoPor:state.user.uid,abertoPorNome:opName,
-          setor:sector,tipoId,typeId,tipoNome:type.nome,
+          setor:sector,tipoId:typeId,tipoNome:type.nome,
           compradorId:buyerId,compradorNome:buyerName,
           setorAtual:sector,compradorAtualId:buyerId,compradorAtualNome:buyerName,
           status:'aberta',passagemAbertaId:nextPassRef.id,passagensCount:1,revisao:1,
@@ -435,9 +529,9 @@
         });
       });
       alertUser(action==='responder'?'Resposta registrada e relógio encerrado.':action==='abrir'?'Divergência aberta e encaminhada.':'Evento gravado com sucesso.');
-      close();
+      close(true);
     } catch(e) {
-      console.error('[Comercial V2.3] Erro ao salvar:',e);
+      console.error('[Comercial V2.3.1] Erro ao salvar:',e);
       alertUser(e?.code==='permission-denied'?'Acesso negado. Publique as novas regras do Firestore antes do teste.':(e.message||'Falha ao salvar'),true);
     } finally {state.busy=false;$('#cv-save').disabled=!canRecord();$('#cv-save').textContent='Salvar ocorrência';}
   }
@@ -460,10 +554,11 @@
       state.user=user;state.profile=null;state.profileAt=0;
       state.catalog.expiresAt=0;state.buyers.clear();
     }
+    renderSession();
   });
   function boot() {
     createUI();scan();observer.observe(document.body,{childList:true,subtree:true});
-    console.info('[Comercial V2.3] Pronto. Nenhuma consulta automática de Firestore por card.');
+    console.info('[Comercial V2.3.1] Pronto. Nenhuma consulta automática de Firestore por card.');
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
