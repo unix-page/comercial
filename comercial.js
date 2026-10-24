@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.3.3
+// @name         Comercial • Infradesk • Registro de divergências V2.3.4
 // @namespace    comercial/infradesk
-// @version      2.3.3
+// @version      2.3.4
 // @description  Uma NF por chave; divergências independentes; cada resposta encerra uma passagem. Sem consultas automáticas por card.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
@@ -14,11 +14,11 @@
   'use strict';
   if (window.__COMERCIAL_APP_RUNNING__) return;
   if (!window.firebase?.auth || !window.firebase?.firestore) {
-    console.error('[Comercial V2.3.3] Firebase compat não encontrado. Confira o loader.');
+    console.error('[Comercial V2.3.4] Firebase compat não encontrado. Confira o loader.');
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.3.3';
+  window.__COMERCIAL_APP_VERSION__ = '2.3.4';
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
   const CONFIG = {
@@ -88,11 +88,23 @@
     writeCardCache(cache);
   }
   function latestMillis(value) { return value?.toMillis?.() || (value ? new Date(value).getTime() : 0) || 0; }
+  // Compatibilidade: a V2.3.3 registrava respostas como 'em_crf'.
+  // Se existe uma resposta gravada e não há passagem ativa, o registro já foi respondido.
+  // Apenas leitura de legado: não modifica o Firestore nem gera gravações extras.
+  function isAnswered(d) {
+    return Boolean(d && (d.status === 'respondida' || (d.status === 'em_crf' && !d.passagemAbertaId && (d.ultimaRespostaId || d.ultimaRespostaNome))));
+  }
+  function effectiveStatus(d) { return isAnswered(d) ? 'respondida' : (d?.status || ''); }
+  function statusTitle(d) {
+    const labels = {aberta:'Aberta',respondida:'Respondida',em_crf:'Aguardando CRF',concluida:'Concluída',devolucao:'Devolver / recusar'};
+    return labels[effectiveStatus(d)] || d?.status || '—';
+  }
   function cardStatusInfo(summary) {
     if (!summary) return { key: '', label: '' };
     if (summary.status === 'aberta') return { key: 'aberta', label: summary.statusText || 'Aberta' };
     if (summary.status === 'em_crf') return { key: 'em_crf', label: summary.statusText || 'Em validação CRF' };
     if (summary.status === 'concluida') return { key: 'concluida', label: summary.statusText || 'Finalizada' };
+    if (summary.status === 'respondida') return { key: 'respondida', label: summary.statusText || 'Respondida' };
     if (summary.status === 'devolucao') return { key: 'devolucao', label: summary.statusText || 'Devolução' };
     return { key: summary.status || 'aberta', label: summary.statusText || 'Aberta' };
   }
@@ -100,13 +112,14 @@
     if (!Array.isArray(divs) || !divs.length) return null;
     const ordered = [...divs].sort((a,b) => latestMillis(b.atualizadoEm || b.ultimaOcorrenciaEm || b.criadoEm) - latestMillis(a.atualizadoEm || a.ultimaOcorrenciaEm || a.criadoEm));
     const open = ordered.find(d => d.passagemAbertaId && d.status === 'aberta');
-    const inCrf = ordered.find(d => d.status === 'em_crf');
+    const inCrf = ordered.find(d => d.status === 'em_crf' && !isAnswered(d));
     const chosen = open || inCrf || ordered[0];
     const setorKey = chosen?.setorAtual || chosen?.setor || '';
     const setorNome = sectors[setorKey] || setorKey || 'Setor';
     const comprador = trim(chosen?.compradorAtualNome || chosen?.compradorNome || '');
     const abertas = ordered.filter(d => d.passagemAbertaId && d.status === 'aberta').length;
-    const pendentesCrf = ordered.filter(d => d.status === 'em_crf').length;
+    const pendentesCrf = ordered.filter(d => d.status === 'em_crf' && !isAnswered(d)).length;
+    const respondidas = ordered.filter(isAnswered).length;
     const resolvidas = ordered.filter(d => ['concluida','devolucao'].includes(d.status)).length;
     let status = 'aberta', statusText = 'Aberta';
     if (open) {
@@ -115,6 +128,9 @@
     } else if (inCrf) {
       status = 'em_crf';
       statusText = 'Retornou à CRF';
+    } else if (isAnswered(chosen)) {
+      status = 'respondida';
+      statusText = 'Respondida';
     } else if (chosen?.status === 'devolucao') {
       status = 'devolucao';
       statusText = 'Devolução';
@@ -126,6 +142,7 @@
     if (comprador) footerParts.push(comprador);
     if (abertas) footerParts.push(`${abertas} aberta(s)`);
     else if (pendentesCrf) footerParts.push(`${pendentesCrf} aguardando CRF`);
+    else if (respondidas) footerParts.push(`${respondidas} respondida(s)`);
     else if (resolvidas) footerParts.push(`${resolvidas} finalizada(s)`);
     return {
       chave: onlyDigits(chave || chosen?.chave || ''),
@@ -201,7 +218,7 @@
       state.visibleLookupAt = Date.now();
       $$('.chamado-item[data-chamado-id]').forEach(renderCardFromCache);
     } catch (e) {
-      console.warn('[Comercial V2.3.3] Não consegui atualizar os cards visíveis:', e);
+      console.warn('[Comercial V2.3.4] Não consegui atualizar os cards visíveis:', e);
     } finally {
       state.visibleLookupBusy = false;
     }
@@ -324,8 +341,8 @@
       .cv-login-entry{padding:10px 12px;border:1px solid #dbeafe;background:#f8fafc;border-radius:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}.cv-login-entry span{font-size:11px;color:#64748b}
       .cv-login-help{font-size:11px;line-height:1.5;color:#64748b}
       .cv-description{font-size:11px;color:#66768c;font-weight:400}.cv-pill{display:inline-flex;padding:3px 8px;border-radius:30px;background:#fff0f6;color:#a51d62;font-size:11px;font-weight:700}.cv-hidden{display:none!important}
-      .comercial-box{clear:both;margin:9px 0 10px;padding:0;border:1px solid rgba(217,30,116,.18);background:#fff;border-radius:12px;color:#172033;font-size:12px;line-height:1.35;overflow:hidden;box-shadow:0 10px 22px rgba(15,23,42,.10)}.comercial-box-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 9px;font-weight:900;color:#fff;background:linear-gradient(135deg,#d91e74,#fb7185)}.comercial-box-title{display:inline-flex;align-items:center;gap:6px;min-width:0}.comercial-box-title img{width:18px;height:18px;border-radius:5px;flex:0 0 auto}.comercial-chip{display:inline-flex;align-items:center;border-radius:999px;padding:2px 7px;font-size:10px;font-weight:900;background:rgba(255,255,255,.96);color:#be185d;border:1px solid rgba(255,255,255,.65);white-space:nowrap}.comercial-box-body{padding:8px 9px 9px;background:#f8fafc;border-left:4px solid #d91e74}.comercial-last-text{margin-top:3px;padding:6px 7px;border-radius:9px;background:#fff;border:1px solid #e2e8f0;color:#334155;overflow-wrap:anywhere;white-space:pre-wrap}.comercial-box small{color:#64748b;display:block;margin-top:5px}.comercial-box.comercial-status-em_crf .comercial-box-head{background:linear-gradient(135deg,#2563eb,#38bdf8)}.comercial-box.comercial-status-concluida .comercial-box-head{background:linear-gradient(135deg,#067647,#12b76a)}.comercial-box.comercial-status-devolucao .comercial-box-head{background:linear-gradient(135deg,#b42318,#ef4444)}
-      .chamado-item[data-comercial-status='aberta']{border-left:4px solid #d91e74!important}.chamado-item[data-comercial-status='em_crf']{border-left:4px solid #2563eb!important}.chamado-item[data-comercial-status='concluida']{border-left:4px solid #12b76a!important}.chamado-item[data-comercial-status='devolucao']{border-left:4px solid #ef4444!important}@media(max-width:620px){.cv-grid{grid-template-columns:1fr}}
+      .comercial-box{clear:both;margin:9px 0 10px;padding:0;border:1px solid rgba(217,30,116,.18);background:#fff;border-radius:12px;color:#172033;font-size:12px;line-height:1.35;overflow:hidden;box-shadow:0 10px 22px rgba(15,23,42,.10)}.comercial-box-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 9px;font-weight:900;color:#fff;background:linear-gradient(135deg,#d91e74,#fb7185)}.comercial-box-title{display:inline-flex;align-items:center;gap:6px;min-width:0}.comercial-box-title img{width:18px;height:18px;border-radius:5px;flex:0 0 auto}.comercial-chip{display:inline-flex;align-items:center;border-radius:999px;padding:2px 7px;font-size:10px;font-weight:900;background:rgba(255,255,255,.96);color:#be185d;border:1px solid rgba(255,255,255,.65);white-space:nowrap}.comercial-box-body{padding:8px 9px 9px;background:#f8fafc;border-left:4px solid #d91e74}.comercial-last-text{margin-top:3px;padding:6px 7px;border-radius:9px;background:#fff;border:1px solid #e2e8f0;color:#334155;overflow-wrap:anywhere;white-space:pre-wrap}.comercial-box small{color:#64748b;display:block;margin-top:5px}.comercial-box.comercial-status-em_crf .comercial-box-head{background:linear-gradient(135deg,#2563eb,#38bdf8)}.comercial-box.comercial-status-respondida .comercial-box-head{background:linear-gradient(135deg,#067647,#12b76a)}.comercial-box.comercial-status-concluida .comercial-box-head{background:linear-gradient(135deg,#067647,#12b76a)}.comercial-box.comercial-status-devolucao .comercial-box-head{background:linear-gradient(135deg,#b42318,#ef4444)}
+      .chamado-item[data-comercial-status='aberta']{border-left:4px solid #d91e74!important}.chamado-item[data-comercial-status='em_crf']{border-left:4px solid #2563eb!important}.chamado-item[data-comercial-status='respondida']{border-left:4px solid #12b76a!important}.chamado-item[data-comercial-status='concluida']{border-left:4px solid #12b76a!important}.chamado-item[data-comercial-status='devolucao']{border-left:4px solid #ef4444!important}@media(max-width:620px){.cv-grid{grid-template-columns:1fr}}
     `;
     document.head.appendChild(style);
     const modal = document.createElement('div');
@@ -345,11 +362,11 @@
         <div id="cv-form" class="cv-hidden" style="display:grid;gap:12px">
           <label>Qual divergência você quer movimentar?<select id="cv-div"><option value="">+ Nova divergência</option></select></label>
           <div id="cv-current" class="cv-card cv-hidden"></div>
-          <label>Próxima ação<select id="cv-action"></select></label>
+          <label id="cv-action-wrap">Próxima ação<select id="cv-action"></select></label>
           <div class="cv-grid" id="cv-target"><label>Setor para encaminhamento<select id="cv-sector"><option value="">Selecione</option><option value="comercial">Comercial</option><option value="fiscal">Fiscal (Sicofe)</option><option value="cadastro">Cadastro</option></select></label><label id="cv-type-wrap">Tipo de divergência<select id="cv-type"><option value="">Selecione</option></select></label></div>
           <label id="cv-buyer-wrap">Comprador responsável<select id="cv-buyer"><option value="">Selecione</option></select></label>
           <label id="cv-response-wrap" class="cv-hidden">Resposta recebida do setor<select id="cv-response"><option value="">Selecione uma resposta</option></select></label>
-          <label><span id="cv-details-title">Observação / detalhes (opcional)</span><textarea id="cv-text" rows="3" placeholder="Observação adicional, se necessário..."></textarea><span id="cv-description-preview" class="cv-description"></span></label>
+          <label id="cv-details-wrap"><span id="cv-details-title">Observação / detalhes (opcional)</span><textarea id="cv-text" rows="3" placeholder="Observação adicional, se necessário..."></textarea><span id="cv-description-preview" class="cv-description"></span></label>
           <p class="cv-hint" id="cv-hint">Registrar no Comercial não altera o chamado original do Infradesk.</p>
         </div>
       </div>
@@ -579,23 +596,29 @@
     state.selected = state.divergences.find(d=>d.id===$('#cv-div').value)||null;
     const d=state.selected;
     const select=$('#cv-action');
+    const closed = Boolean(d && (isAnswered(d) || ['concluida','devolucao'].includes(d.status)));
     const options = !d ? [['abrir','Abrir e encaminhar divergência']] :
+      closed ? [] :
       d.passagemAbertaId ? [['responder','Registrar resposta recebida (para o relógio)'],['observacao','Adicionar observação (mantém relógio)']] :
-      ['concluida','devolucao'].includes(d.status) ? [['reabrir','Reabrir e encaminhar novamente'],['observacao','Adicionar observação ao histórico']] :
       [['encaminhar','Encaminhar novamente'],['concluir','Concluir após validação CRF'],['devolver','Marcar para devolução/recusa'],['observacao','Adicionar observação']];
     select.replaceChildren(...options.map(([v,t])=>new Option(t,v)));
     const box=$('#cv-current');
     box.classList.toggle('cv-hidden',!d);
     if (d) {
       const set=d.setorAtual || d.setor;
-      box.innerHTML = `<b>Divergência:</b> ${escape(d.tipoNome||'—')} <span class="cv-pill">${escape(d.status||'—')}</span><br><b>Setor atual:</b> ${escape(sectors[set]||set||'CRF')} • <b>Comprador:</b> ${escape(d.compradorAtualNome||d.compradorNome||'—')}<br><b>Passagem:</b> ${d.passagemAbertaId ? 'aguardando resposta (tempo contando)' : 'sem relógio ativo'} • <b>Última ocorrência:</b> ${escape(timeString(d.ultimaOcorrenciaEm))}`;
+      box.innerHTML = `<b>Divergência:</b> ${escape(d.tipoNome||'—')} <span class="cv-pill">${escape(statusTitle(d))}</span><br><b>Setor:</b> ${escape(sectors[set]||set||'CRF')} • <b>Comprador:</b> ${escape(d.compradorAtualNome||d.compradorNome||'—')}<br><b>Passagem:</b> ${d.passagemAbertaId ? 'aguardando resposta (tempo contando)' : 'relógio encerrado'} • <b>Última ocorrência:</b> ${escape(timeString(d.ultimaOcorrenciaEm))}${isAnswered(d) ? `<br><b>Resposta:</b> ${escape(d.ultimaRespostaNome || 'Registrada')}` : ''}`;
       $('#cv-sector').value = d.setorAtual || d.setor || '';
     } else $('#cv-sector').value='';
     renderMode();
   }
   function renderMode() {
     const d=state.selected;
-    const mode=state.mode=$('#cv-action').value;
+    const closed = Boolean(d && (isAnswered(d) || ['concluida','devolucao'].includes(d.status)));
+    const mode = state.mode = closed ? 'visualizar' : $('#cv-action').value;
+    $('#cv-action-wrap').classList.toggle('cv-hidden', closed);
+    $('#cv-details-wrap').classList.toggle('cv-hidden', closed);
+    $('#cv-save').classList.toggle('cv-hidden', closed);
+    $('#cv-save').disabled = closed || !canRecord();
     const target=['abrir','encaminhar','reabrir'].includes(mode);
     const response=mode==='responder';
     $('#cv-target').classList.toggle('cv-hidden',!target);
@@ -617,7 +640,8 @@
     $('#cv-text').required = needsDetail;
     $('#cv-description-preview').textContent = '';
     if (mode === 'abrir') fillTypeDescription();
-    $('#cv-hint').textContent = response ? 'Qualquer resposta ativa deste setor encerra a passagem e para o relógio. “Informações divergentes” atribui esse período ao retrabalho por erro da CRF. Não encerra automaticamente a divergência.' :
+    $('#cv-hint').textContent = closed ? 'Esta ocorrência já recebeu uma resposta e está encerrada. Nenhuma nova ação é necessária. O histórico continua disponível no painel. Para outra divergência da nota, selecione “+ Abrir nova divergência”.' :
+      response ? 'Ao salvar uma resposta ativa deste setor, a passagem e a ocorrência serão encerradas. “Informações divergentes” atribui esse período ao retrabalho por erro da CRF.' :
       target ? 'Ao salvar será iniciada uma nova passagem. A classificação original da divergência não muda. O Comercial não modifica o status do Infradesk.' :
       mode==='observacao' ? 'Esta observação não muda a situação nem inicia/encerra relógio.' :
       'Esta ação é da CRF e somente fica disponível sem passagem ativa.';
@@ -689,6 +713,9 @@
   async function save() {
     if (state.busy || !canRecord() || !state.data) return;
     const action=state.mode, old=state.selected, data=state.data;
+    if (action === 'visualizar' || (old && (isAnswered(old) || ['concluida','devolucao'].includes(old.status)))) {
+      return alertUser('Esta divergência já foi respondida ou encerrada. Não há nova ação pendente.', true);
+    }
     const sector=$('#cv-sector').value, typeId=$('#cv-type').value;
     const buyerId=$('#cv-buyer').value, responseId=$('#cv-response').value;
     let details=trim($('#cv-text').value);
@@ -737,6 +764,7 @@
 
         const prior=dSnap?.data()||null;
         if (old && !dSnap.exists) throw Error('Divergência não encontrada. Reabra a nota.');
+        if (old && (isAnswered(prior) || ['concluida','devolucao'].includes(prior?.status))) throw Error('Divergência já respondida ou encerrada. Atualize esta nota.');
         if (old && (Number(prior.revisao||0)!==Number(old.revisao||0) || String(prior.passagemAbertaId||'')!==String(old.passagemAbertaId||''))) throw Error('Outro operador já movimentou esta divergência. Reabra a nota para atualizar.');
         if (action==='responder' && (!prior?.passagemAbertaId || !pSnap?.exists || pSnap.data().fimEm)) throw Error('Esta passagem já foi encerrada. Atualize a nota.');
         if (action==='observacao' && !old) throw Error('Escolha uma divergência.');
@@ -763,7 +791,12 @@
         if(!nSnap.exists) tx.set(noteRef,{...noteData,criadoEm:now,divergenciasCount:action==='abrir'?1:0});
         else tx.update(noteRef,{...noteData,...(action==='abrir'?{divergenciasCount:FV.increment(1)}:{})});
 
-        const nextStatus=forwarding?'aberta':action==='responder'?'em_crf':action==='concluir'?'concluida':action==='devolver'?'devolucao':prior.status;
+        // Toda resposta encerra a passagem. O efeito cadastrado, quando explícito,
+        // apenas classifica o resultado final; não exige outra movimentação da CRF.
+        const responseStatus = action === 'responder'
+          ? (isDevolverResponse(response) ? 'devolucao' : response?.efeito === 'concluir' ? 'concluida' : 'respondida')
+          : '';
+        const nextStatus=forwarding?'aberta':action==='responder'?responseStatus:action==='concluir'?'concluida':action==='devolver'?'devolucao':prior.status;
         const buyerName=sector==='comercial'?(buyer?.nome||''):'';
         if (!prior) tx.set(divRef,{
           chave:data.chave,cnpj:data.cnpj,numeroNf:data.numeroNf,fornecedorNome:supplierName,
@@ -781,7 +814,7 @@
             setorAtual:sector,compradorAtualId:sector==='comercial'?buyerId:'',compradorAtualNome:buyerName,
             ...(action==='reabrir'?{resolvidoEm:null}:{})
           });
-          if (action==='responder') Object.assign(changes,{passagemAbertaId:null,ultimaRespostaId:response.id,ultimaRespostaNome:response.nome});
+          if (action==='responder') Object.assign(changes,{passagemAbertaId:null,ultimaRespostaId:response.id,ultimaRespostaNome:response.nome,encerradoEm:now});
           if (['concluir','devolver'].includes(action)) Object.assign(changes,{passagemAbertaId:null,resolvidoEm:now});
           tx.update(divRef,changes);
         }
@@ -812,7 +845,7 @@
       const summary = summarizeDivergences(state.divergences, state.data?.chave);
       rememberCardSummary(state.data?.chave, summary);
       renderCardBox(state.card, summary);
-      alertUser(action==='responder'?'Resposta registrada e relógio encerrado.':action==='abrir'?'Divergência aberta e encaminhada.':'Evento gravado com sucesso.');
+      alertUser(action==='responder'?'Resposta registrada. Passagem e divergência encerradas.':action==='abrir'?'Divergência aberta e encaminhada.':'Evento gravado com sucesso.');
       close(true);
     } catch(e) {
       console.error('[Comercial V2.3.1] Erro ao salvar:',e);
@@ -844,7 +877,7 @@
   });
   function boot() {
     createUI();scan();observer.observe(document.body,{childList:true,subtree:true});
-    console.info('[Comercial V2.3.3] Pronto. Cards consultam apenas chaves visíveis, sem listeners em tempo real.');
+    console.info('[Comercial V2.3.4] Pronto. Cards consultam apenas chaves visíveis, sem listeners em tempo real.');
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
