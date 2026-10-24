@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.3.1
+// @name         Comercial • Infradesk • Registro de divergências V2.3.2
 // @namespace    comercial/infradesk
-// @version      2.3.1
+// @version      2.3.2
 // @description  Uma NF por chave; divergências independentes; cada resposta encerra uma passagem. Sem consultas automáticas por card.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
@@ -14,11 +14,11 @@
   'use strict';
   if (window.__COMERCIAL_APP_RUNNING__) return;
   if (!window.firebase?.auth || !window.firebase?.firestore) {
-    console.error('[Comercial V2.3.1] Firebase compat não encontrado. Confira o loader.');
+    console.error('[Comercial V2.3.2] Firebase compat não encontrado. Confira o loader.');
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.3.1';
+  window.__COMERCIAL_APP_VERSION__ = '2.3.2';
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
   const CONFIG = {
@@ -29,12 +29,26 @@
     messagingSenderId: '602637992147',
     appId: '1:602637992147:web:fc930856cc72f598a31426'
   };
+  // Congela a mesma cópia do SDK para Auth, Provider e Firestore. O Xabuia
+  // e outros userscripts podem substituir window.firebase depois da carga.
+  const comercialFirebaseSDK = window.firebase;
+  const ComercialGoogleAuthProvider = comercialFirebaseSDK.auth.GoogleAuthProvider;
+  const APP_NAME = 'comercial-divergencias-app';
   let app;
-  try { app = firebase.app('comercial-divergencias-app'); }
-  catch (_) { app = firebase.initializeApp(CONFIG, 'comercial-divergencias-app'); }
-  const auth = app.auth();
-  const db = app.firestore();
-  const FV = firebase.firestore.FieldValue;
+  try { app = comercialFirebaseSDK.app(APP_NAME); }
+  catch (_) { app = comercialFirebaseSDK.initializeApp(CONFIG, APP_NAME); }
+  if (app.options?.projectId !== CONFIG.projectId || app.options?.appId !== CONFIG.appId) {
+    console.error('[Comercial] Instância nomeada Firebase com configuração diferente.');
+    return;
+  }
+  const auth = comercialFirebaseSDK.auth(app);
+  const db = comercialFirebaseSDK.firestore(app);
+  const FV = comercialFirebaseSDK.firestore.FieldValue;
+  auth.languageCode = 'pt-BR';
+  console.info('[Comercial Google] SDK isolado:', {
+    app: app.name, projectId: app.options.projectId,
+    sdkVersion: comercialFirebaseSDK.SDK_VERSION || 'compat'
+  });
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
   const onlyDigits = s => String(s ?? '').replace(/\D/g, '');
@@ -71,8 +85,11 @@
       ...parsed,
       chamadoInfradeskId: card.getAttribute('data-chamado-id') || '',
       fornecedorNome,
+      fornecedorTexto: trim(supplierLink?.textContent || ''),
       fornecedorId: supplierLink?.getAttribute('href')?.match(/\/fornecedores\/contato\/(\d+)/i)?.[1] || '',
-      empresa: trim($('.item-data-empresa',card)?.textContent || ''),
+      // Mesmo seletor do Xabuia. A empresa é a loja/unidade mostrada no card.
+      empresa: trim($('.item-data-empresa', card)?.textContent || ''),
+      statusInfradesk: trim(card.closest('ul[data-status-descricao]')?.getAttribute('data-status-descricao') || ''),
       descricaoInfradesk: trim($('.item-ultima-descricao-copy',card)?.textContent || '')
     };
   }
@@ -161,17 +178,26 @@
       .cv-content label{display:grid;gap:5px;font-size:12px;font-weight:700}.cv-content select,.cv-content input,.cv-content textarea{box-sizing:border-box;width:100%;padding:9px 10px;color:#162238;background:white;border:1px solid #d4dce9;border-radius:8px;font:13px system-ui}
       .cv-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.cv-card{padding:10px 12px;border:1px solid #e6eaf1;border-radius:9px;background:#f8fafc;line-height:1.55}
       .cv-hint{font-size:11px;color:#65758b;line-height:1.5}.cv-buttons{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid #e6eaf1;flex-wrap:wrap}.cv-button{padding:9px 12px;border:1px solid #d6deea;background:white;color:#1a2941;border-radius:8px;font:700 12px system-ui;cursor:pointer}.cv-button:disabled{opacity:.55;cursor:not-allowed}.cv-button.primary{background:#d91e74;border-color:#d91e74;color:#fff}.cv-login{display:grid;gap:10px;padding:12px;border:1px solid #dce4ee;border-radius:10px}
-      .cv-session{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;background:#f3f7fc;border:1px solid #dbe3ee;border-radius:9px;font-size:12px;flex-wrap:wrap}.cv-session b{color:#14213d}.cv-session small{color:#5c6a7c}.cv-description{font-size:11px;color:#66768c;font-weight:400}.cv-pill{display:inline-flex;padding:3px 8px;border-radius:30px;background:#fff0f6;color:#a51d62;font-size:11px;font-weight:700}.cv-hidden{display:none!important}@media(max-width:620px){.cv-grid{grid-template-columns:1fr}}
+      .cv-session{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;background:#f3f7fc;border:1px solid #dbe3ee;border-radius:9px;font-size:12px;flex-wrap:wrap}.cv-session b{color:#14213d}.cv-session small{color:#5c6a7c}
+      .cv-login-entry{padding:10px 12px;border:1px solid #ffd8e9;border-radius:10px;background:#fff5fa;display:flex;gap:10px;align-items:center;flex-wrap:wrap}.cv-login-entry span{font-size:11px;color:#66768c}
+      .cv-login-help{font-size:11px;line-height:1.5;color:#6b7280}
+      .cv-description{font-size:11px;color:#66768c;font-weight:400}.cv-pill{display:inline-flex;padding:3px 8px;border-radius:30px;background:#fff0f6;color:#a51d62;font-size:11px;font-weight:700}.cv-hidden{display:none!important}@media(max-width:620px){.cv-grid{grid-template-columns:1fr}}
     `;
     document.head.appendChild(style);
     const modal = document.createElement('div');
     modal.id = 'comercial-v2-modal'; modal.className = 'cv-backdrop';
     modal.innerHTML = `<div class="cv-window" role="dialog" aria-modal="true" aria-label="Comercial V2">
-      <div class="cv-header"><img src="${ICON}" alt=""><div><strong>Comercial — Ocorrências</strong><small>V2.3.1 • Divergências e respostas por setor</small></div><button class="cv-button" id="cv-close" type="button">✕</button></div>
+      <div class="cv-header"><img src="${ICON}" alt=""><div><strong>Comercial — Ocorrências</strong><small>V2.3.2 • Divergências e respostas por setor</small></div><button class="cv-button" id="cv-close" type="button">✕</button></div>
       <div class="cv-content">
         <div class="cv-info" id="cv-info"></div>
         <div class="cv-session"><div id="cv-session-text">Verificando login do Comercial...</div><button type="button" class="cv-button cv-hidden" id="cv-logout">Sair / trocar conta</button></div>
-        <div id="cv-login" class="cv-login cv-hidden"><strong id="cv-login-status">Entre no Comercial</strong><div class="cv-grid"><input id="cv-email" type="email" placeholder="E-mail"><input id="cv-pass" type="password" placeholder="Senha"></div><div><button class="cv-button" id="cv-email-login" type="button">Entrar com e-mail</button> <button class="cv-button" id="cv-google-login" type="button">Entrar com Google</button></div></div>
+        <div id="cv-login-entry" class="cv-login-entry cv-hidden"><button type="button" id="cv-login-toggle" class="cv-button primary">Entrar no Comercial</button><span>Login independente do Infradesk e do Xabuia.</span></div>
+        <div id="cv-login" class="cv-login cv-hidden">
+          <strong id="cv-login-status">Entre com a conta do Comercial</strong>
+          <div id="cv-login-fields"></div>
+          <div><button class="cv-button primary" id="cv-email-login" type="button">Entrar com e-mail</button> <button class="cv-button" id="cv-google-login" type="button">Entrar com Google</button> <button class="cv-button" id="cv-reset-password" type="button">Definir/recuperar senha</button></div>
+          <span class="cv-login-help">Informe as credenciais do <b>Comercial</b>, não as do Infradesk. Os campos só aparecem quando você abre o login para evitar preenchimento automático de outra conta.</span>
+        </div>
         <div id="cv-form" class="cv-hidden" style="display:grid;gap:12px">
           <label>Qual divergência você quer movimentar?<select id="cv-div"><option value="">+ Nova divergência</option></select></label>
           <div id="cv-current" class="cv-card cv-hidden"></div>
@@ -193,19 +219,10 @@
     $('#cv-sector').onchange = () => { renderTypes(); renderBuyers(); };
     $('#cv-type').onchange = fillTypeDescription;
     $('#cv-response').onchange = renderResponseDetailRequirement;
-    $('#cv-google-login').onclick = async () => {
-      const b = $('#cv-google-login'); b.disabled = true;
-      try {
-        // Precisa ser chamado imediatamente no clique, antes de outras operações assíncronas.
-        await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
-        await loadProfile(true); await loadForm();
-      } catch(e) { console.error('[Comercial] Google:',e); alertUser(googleError(e),true); }
-      finally { b.disabled = false; }
-    };
-    $('#cv-email-login').onclick = async () => {
-      try { await auth.signInWithEmailAndPassword($('#cv-email').value.trim(),$('#cv-pass').value); await loadProfile(true); await loadForm(); }
-      catch(e) { alertUser(e?.message||'Erro no login.',true); }
-    };
+    $('#cv-login-toggle').onclick = toggleLoginPanel;
+    $('#cv-google-login').onclick = loginGoogle;
+    $('#cv-email-login').onclick = loginWithEmail;
+    $('#cv-reset-password').onclick = resetPassword;
     $('#cv-refresh').onclick = async () => {
       if (!state.data || state.busy) return;
       $('#cv-refresh').disabled = true;
@@ -228,11 +245,115 @@
       finally { button.disabled = false; }
     };
   }
+  function clearLoginFields() {
+    $('#cv-login')?.classList.add('cv-hidden');
+    $('#cv-login-fields')?.replaceChildren(); // Senha não permanece no DOM.
+  }
+  function mountLoginFields() {
+    const slot = $('#cv-login-fields');
+    if (!slot) return;
+    slot.innerHTML = `<div class="cv-grid">
+      <label>E-mail Comercial<input id="cv-email" name="comercial_login_email_independente" type="email" inputmode="email" autocomplete="off" autocapitalize="off" spellcheck="false" readonly placeholder="nome@empresa.com.br"></label>
+      <label>Senha Comercial<input id="cv-pass" name="comercial_login_senha_independente" type="password" autocomplete="new-password" readonly placeholder="Senha cadastrada no Comercial"></label>
+    </div>`;
+    for (const input of [$('#cv-email'), $('#cv-pass')]) {
+      if (!input) continue;
+      input.value = '';
+      input.dataset.manual = '0';
+      input.addEventListener('focus', () => { input.value = ''; input.readOnly = false; }, { once: true });
+      input.addEventListener('beforeinput', e => {
+        if (['insertText','insertCompositionText','insertFromPaste','insertFromDrop'].includes(e.inputType)) input.dataset.manual='1';
+      });
+      input.addEventListener('keydown', e => {
+        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) input.dataset.manual='1';
+      });
+      input.addEventListener('paste', () => { input.dataset.manual='1'; });
+      input.addEventListener('drop', () => { input.dataset.manual='1'; });
+    }
+    $('#cv-pass')?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); loginWithEmail(); }
+    });
+  }
+  function toggleLoginPanel() {
+    const panel=$('#cv-login');
+    if (!panel) return;
+    if (!panel.classList.contains('cv-hidden')) { clearLoginFields(); return; }
+    mountLoginFields();
+    panel.classList.remove('cv-hidden');
+  }
+  function emailError(e) {
+    const messages={
+      'auth/invalid-credential':'E-mail ou senha inválidos. Se você usa apenas Google, utilize Definir/recuperar senha.',
+      'auth/wrong-password':'Senha incorreta.',
+      'auth/user-not-found':'Usuário não encontrado neste projeto Comercial.',
+      'auth/invalid-email':'E-mail inválido.',
+      'auth/too-many-requests':'Muitas tentativas. Tente novamente mais tarde.',
+      'auth/operation-not-allowed':'Login por senha não habilitado no Firebase Authentication.',
+      'auth/network-request-failed':'Falha de rede ou conexão bloqueada.'
+    };
+    return messages[e?.code] || e?.message || 'Não foi possível entrar com e-mail.';
+  }
+  function emailFields() {
+    return { email: String($('#cv-email')?.value || '').trim(), password:String($('#cv-pass')?.value || '') };
+  }
+  async function loginWithEmail() {
+    if (loginWithEmail.inProgress) return loginWithEmail.inProgress;
+    const {email,password}=emailFields();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || $('#cv-email')?.dataset.manual !== '1') {
+      alertUser('Digite o e-mail do Comercial, não o sugerido automaticamente pelo Infradesk.',true);
+      $('#cv-email')?.focus();return;
+    }
+    if (!password || $('#cv-pass')?.dataset.manual !== '1') {
+      alertUser('Digite a senha cadastrada no Comercial.',true);
+      $('#cv-pass')?.focus();return;
+    }
+    const button=$('#cv-email-login'); if(button) button.disabled=true;
+    loginWithEmail.inProgress=auth.signInWithEmailAndPassword(email,password)
+      .then(async()=>{clearLoginFields();await loadProfile(true);await loadForm();alertUser('Conta Comercial conectada.');})
+      .catch(e=>{console.error('[Comercial E-mail]',e);alertUser(emailError(e),true);})
+      .finally(()=>{loginWithEmail.inProgress=null;if(button)button.disabled=false;});
+    return loginWithEmail.inProgress;
+  }
+  async function resetPassword() {
+    const {email}=emailFields();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || $('#cv-email')?.dataset.manual !== '1') {
+      alertUser('Digite manualmente o e-mail do Comercial para receber o link.',true);
+      $('#cv-email')?.focus();return;
+    }
+    const button=$('#cv-reset-password');if(button)button.disabled=true;
+    try { await auth.sendPasswordResetEmail(email);alertUser('Se a conta permitir recuperação, verifique a caixa de entrada deste e-mail.'); }
+    catch(e) { console.error('[Comercial Recuperar Senha]',e);alertUser(emailError(e),true); }
+    finally {if(button)button.disabled=false;}
+  }
+  function loginGoogle() {
+    // Abertura do popup acontece diretamente no clique, SEM await anterior.
+    if (loginGoogle.inProgress) return loginGoogle.inProgress;
+    const button=$('#cv-google-login');
+    try {
+      const provider=new ComercialGoogleAuthProvider();
+      provider.setCustomParameters({prompt:'select_account'});
+      console.info('[Comercial Google] Login:',{app:app.name,projectId:app.options.projectId,
+        sdkVersion:comercialFirebaseSDK.SDK_VERSION||'compat',globalSdkTrocado:window.firebase!==comercialFirebaseSDK});
+      if(button)button.disabled=true;
+      const popup=auth.signInWithPopup(provider);
+      loginGoogle.inProgress=popup.then(async()=>{
+        clearLoginFields();await loadProfile(true);await loadForm();alertUser('Conta Google conectada ao Comercial.');
+      }).catch(e=>{
+        console.error('[Comercial Google] Falha:',{code:e?.code,message:e?.message,app:app.name,
+          sdkGlobalTrocado:window.firebase!==comercialFirebaseSDK});
+        alertUser(googleError(e),true);
+      }).finally(()=>{loginGoogle.inProgress=null;if(button)button.disabled=false;});
+      return loginGoogle.inProgress;
+    } catch(e) {if(button)button.disabled=false;console.error('[Comercial Google] Falha antes do popup:',e);alertUser(googleError(e),true);}
+  }
   function googleError(e) {
     const messages={
+      'auth/argument-error':'Conflito entre cópias do Firebase. Veja o Console [Comercial Google].',
       'auth/popup-blocked':'Popup bloqueado. Autorize janelas para o Infradesk.',
       'auth/unauthorized-domain':'Domínio não autorizado no Firebase Authentication: '+location.hostname,
       'auth/popup-closed-by-user':'Janela de login fechada antes de concluir.',
+      'auth/cancelled-popup-request':'Já há um login Google em andamento.',
+      'auth/web-storage-unsupported':'Armazenamento do navegador bloqueado para autenticação.',
       'auth/network-request-failed':'Falha de rede ou bloqueio de conexão.',
       'auth/operation-not-allowed':'Login Google desabilitado no projeto Firebase.'
     };
@@ -241,6 +362,7 @@
   function close(force = false) {
     if (state.busy && force !== true) return;
     $('#comercial-v2-modal')?.classList.remove('open');
+    clearLoginFields();
     state.card = null; state.data = null; state.selected = null; state.viewToken++;
   }
   async function openCard(card) {
@@ -248,7 +370,11 @@
     if (!data) { alertUser('Chave de NF-e ausente ou inválida. Confira os 44 dígitos.',true); return; }
     const token = ++state.viewToken;
     state.card = card; state.data = data; state.selected = null; state.autoDetails = '';
-    $('#cv-info').innerHTML = `<b>Chamado:</b> ${escape(data.chamadoInfradeskId||'—')} • <b>NF:</b> ${escape(data.numeroNf)} • <b>CNPJ:</b> ${escape(data.cnpj)}<br><b>Fornecedor no Infradesk:</b> ${escape(data.fornecedorNome)}<br><b>Chave:</b> ${escape(data.chave)}`;
+    $('#cv-info').innerHTML = `<div><b>Chave:</b> ${escape(data.chave)}</div>
+      <div><b>NF:</b> ${escape(data.numeroNf)} • <b>CNPJ:</b> ${escape(data.cnpj)}</div>
+      <div><b>Infradesk:</b> ${escape(data.chamadoInfradeskId||'—')} • ${escape(data.statusInfradesk||'—')}</div>
+      <div><b>Empresa:</b> ${escape(data.empresa||'—')}</div>
+      <div><b>Fornecedor:</b> ${escape(data.fornecedorTexto||data.fornecedorNome||'—')}</div>`;
     $('#cv-text').value = '';
     $('#comercial-v2-modal').classList.add('open');
     $('#cv-form').classList.add('cv-hidden');
@@ -284,7 +410,8 @@
   async function loadForm() {
     const allowed = canRecord();
     renderSession();
-    $('#cv-login').classList.toggle('cv-hidden',allowed);
+    $('#cv-login-entry').classList.toggle('cv-hidden', !!state.user);
+    if (state.user) clearLoginFields();
     $('#cv-form').classList.toggle('cv-hidden',!allowed);
     $('#cv-save').disabled = !allowed;
     $('#cv-login-status').textContent = !state.user ? 'Entre no Comercial' : !state.profile ? 'Conta conectada sem perfil em usuarios. Use Sair / trocar conta para escolher outra.' : state.profile.ativo === false ? 'Conta inativa' : 'Este perfil não pode registrar eventos';
@@ -478,6 +605,8 @@
         const noteData={
           chave:data.chave,cnpj:data.cnpj,numeroNf:data.numeroNf,serie:data.serie,
           fornecedorNome:supplierName,nomeInfradesk:data.fornecedorNome,
+          fornecedorTexto:data.fornecedorTexto||data.fornecedorNome,
+          empresa:data.empresa||'',statusInfradesk:data.statusInfradesk||'',
           ultimaAcao:action,ultimaOcorrenciaTexto:details,atualizadoEm:now,versao:2
         };
         if (data.chamadoInfradeskId) noteData.chamadosInfradeskIds=FV.arrayUnion(data.chamadoInfradeskId);
@@ -525,6 +654,7 @@
           atribuicaoTempo:action==='responder'?attribution:'',
           passagemId:action==='responder'?(prior?.passagemAbertaId||''):(nextPassRef?.id||''),
           texto:details,chamadoInfradeskId:data.chamadoInfradeskId||'',
+          empresa:data.empresa||'',
           usuarioId:state.user.uid,usuarioNome:opName,usuarioEmail:state.user.email||'',criadoEm:now
         });
       });
@@ -558,7 +688,7 @@
   });
   function boot() {
     createUI();scan();observer.observe(document.body,{childList:true,subtree:true});
-    console.info('[Comercial V2.3.1] Pronto. Nenhuma consulta automática de Firestore por card.');
+    console.info('[Comercial V2.3.2] Pronto. Nenhuma consulta automática de Firestore por card.');
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
