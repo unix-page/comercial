@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.3.2
+// @name         Comercial • Infradesk • Registro de divergências V2.3.3
 // @namespace    comercial/infradesk
-// @version      2.3.2
+// @version      2.3.3
 // @description  Uma NF por chave; divergências independentes; cada resposta encerra uma passagem. Sem consultas automáticas por card.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
@@ -14,11 +14,11 @@
   'use strict';
   if (window.__COMERCIAL_APP_RUNNING__) return;
   if (!window.firebase?.auth || !window.firebase?.firestore) {
-    console.error('[Comercial V2.3.2] Firebase compat não encontrado. Confira o loader.');
+    console.error('[Comercial V2.3.3] Firebase compat não encontrado. Confira o loader.');
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.3.2';
+  window.__COMERCIAL_APP_VERSION__ = '2.3.3';
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
   const CONFIG = {
@@ -56,14 +56,156 @@
   const escape = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
   const sectors = { fiscal:'Fiscal (Sicofe)', comercial:'Comercial', cadastro:'Cadastro' };
   const TTL = 15 * 60 * 1000;
+  const CARD_CACHE_TTL = 5 * 60 * 1000;
+  const CARD_CACHE_KEY = 'comercial_v2_card_cache';
   const state = {
     user: null, profile: null, profileAt: 0,
     catalog: { types: [], responses: [], expiresAt: 0 },
     buyers: new Map(),
     card: null, data: null, supplier: null,
     divergences: [], selected: null, busy: false,
-    viewToken: 0, mode: 'abrir', autoDetails: ''
+    viewToken: 0, mode: 'abrir', autoDetails: '',
+    visibleLookupBusy: false, visibleLookupAt: 0
   };
+
+  function readCardCache() {
+    try { return JSON.parse(localStorage.getItem(CARD_CACHE_KEY) || '{}') || {}; } catch (_) { return {}; }
+  }
+  function writeCardCache(cache) { try { localStorage.setItem(CARD_CACHE_KEY, JSON.stringify(cache || {})); } catch (_) {} }
+  function cardCacheEntry(chave) {
+    if (!chave) return null;
+    const cache = readCardCache();
+    const entry = cache[onlyDigits(chave)];
+    if (!entry || !entry.cachedAt || (Date.now() - Number(entry.cachedAt) > CARD_CACHE_TTL)) return null;
+    return entry;
+  }
+  function rememberCardSummary(chave, summary) {
+    if (!chave) return;
+    const key = onlyDigits(chave);
+    const cache = readCardCache();
+    cache[key] = { cachedAt: Date.now(), summary: summary || null };
+    Object.keys(cache).forEach(k => { if (!cache[k]?.cachedAt || Date.now() - Number(cache[k].cachedAt) > CARD_CACHE_TTL) delete cache[k]; });
+    writeCardCache(cache);
+  }
+  function latestMillis(value) { return value?.toMillis?.() || (value ? new Date(value).getTime() : 0) || 0; }
+  function cardStatusInfo(summary) {
+    if (!summary) return { key: '', label: '' };
+    if (summary.status === 'aberta') return { key: 'aberta', label: summary.statusText || 'Aberta' };
+    if (summary.status === 'em_crf') return { key: 'em_crf', label: summary.statusText || 'Em validação CRF' };
+    if (summary.status === 'concluida') return { key: 'concluida', label: summary.statusText || 'Finalizada' };
+    if (summary.status === 'devolucao') return { key: 'devolucao', label: summary.statusText || 'Devolução' };
+    return { key: summary.status || 'aberta', label: summary.statusText || 'Aberta' };
+  }
+  function summarizeDivergences(divs, chave = '') {
+    if (!Array.isArray(divs) || !divs.length) return null;
+    const ordered = [...divs].sort((a,b) => latestMillis(b.atualizadoEm || b.ultimaOcorrenciaEm || b.criadoEm) - latestMillis(a.atualizadoEm || a.ultimaOcorrenciaEm || a.criadoEm));
+    const open = ordered.find(d => d.passagemAbertaId && d.status === 'aberta');
+    const inCrf = ordered.find(d => d.status === 'em_crf');
+    const chosen = open || inCrf || ordered[0];
+    const setorKey = chosen?.setorAtual || chosen?.setor || '';
+    const setorNome = sectors[setorKey] || setorKey || 'Setor';
+    const comprador = trim(chosen?.compradorAtualNome || chosen?.compradorNome || '');
+    const abertas = ordered.filter(d => d.passagemAbertaId && d.status === 'aberta').length;
+    const pendentesCrf = ordered.filter(d => d.status === 'em_crf').length;
+    const resolvidas = ordered.filter(d => ['concluida','devolucao'].includes(d.status)).length;
+    let status = 'aberta', statusText = 'Aberta';
+    if (open) {
+      status = 'aberta';
+      statusText = setorNome;
+    } else if (inCrf) {
+      status = 'em_crf';
+      statusText = 'Retornou à CRF';
+    } else if (chosen?.status === 'devolucao') {
+      status = 'devolucao';
+      statusText = 'Devolução';
+    } else {
+      status = 'concluida';
+      statusText = 'Finalizada';
+    }
+    const footerParts = [];
+    if (comprador) footerParts.push(comprador);
+    if (abertas) footerParts.push(`${abertas} aberta(s)`);
+    else if (pendentesCrf) footerParts.push(`${pendentesCrf} aguardando CRF`);
+    else if (resolvidas) footerParts.push(`${resolvidas} finalizada(s)`);
+    return {
+      chave: onlyDigits(chave || chosen?.chave || ''),
+      status, statusText,
+      tipoNome: trim(chosen?.tipoNome || 'Divergência'),
+      setorNome,
+      compradorNome: comprador,
+      ultimaOcorrenciaTexto: trim(chosen?.ultimaOcorrenciaTexto || chosen?.ultimaRespostaNome || chosen?.tipoNome || 'Divergência registrada.'),
+      atualizadoEm: chosen?.ultimaOcorrenciaEm || chosen?.atualizadoEm || chosen?.criadoEm || null,
+      footer: footerParts.join(' • '),
+      total: ordered.length
+    };
+  }
+  function removeCardBox(card) {
+    $('.comercial-box', card)?.remove();
+    if (card) delete card.dataset.comercialStatus;
+  }
+  function ensureCardBox(card) {
+    let box = $('.comercial-box', card);
+    if (box) return box;
+    box = document.createElement('div');
+    box.className = 'comercial-box';
+    const tags = $('.chamado-tags', card);
+    if (tags?.parentElement) tags.insertAdjacentElement('afterend', box);
+    else (card.children?.[0] || card).appendChild(box);
+    return box;
+  }
+  function renderCardBox(card, summary) {
+    if (!card) return;
+    if (!summary) { removeCardBox(card); return; }
+    const box = ensureCardBox(card);
+    const info = cardStatusInfo(summary);
+    card.dataset.comercialStatus = info.key;
+    const when = timeString(summary.atualizadoEm);
+    box.className = `comercial-box comercial-status-${String(info.key).replace(/[^a-z0-9_-]/gi,'_')}`;
+    box.innerHTML = `
+      <div class="comercial-box-head"><span class="comercial-box-title"><img src="${ICON}" alt=""> Comercial</span><span class="comercial-chip">${escape(info.label)}</span></div>
+      <div class="comercial-box-body">
+        <div><strong>${escape(summary.tipoNome || 'Divergência')}</strong></div>
+        <div class="comercial-last-text">${escape(summary.ultimaOcorrenciaTexto || 'Divergência registrada.')}</div>
+        <small>${escape(when)}${summary.footer ? ' • ' + escape(summary.footer) : ''}</small>
+      </div>`;
+  }
+  function renderCardFromCache(card) {
+    const data = extract(card);
+    if (!data) return false;
+    const entry = cardCacheEntry(data.chave);
+    if (!entry) { removeCardBox(card); return false; }
+    renderCardBox(card, entry.summary);
+    return Boolean(entry.summary);
+  }
+  async function refreshVisibleCards(force = false) {
+    if (state.visibleLookupBusy) return;
+    if (!auth.currentUser || !canRecord()) return;
+    if (!force && Date.now() - state.visibleLookupAt < 120000) return;
+    const keys = [...new Set($$('.chamado-item[data-chamado-id]').map(extract).filter(Boolean).map(x => x.chave).filter(Boolean))];
+    if (!keys.length) return;
+    const chunks = [];
+    for (let i = 0; i < keys.length; i += 10) chunks.push(keys.slice(i, i + 10));
+    state.visibleLookupBusy = true;
+    try {
+      for (const chunk of chunks) {
+        const snap = await db.collection('divergencias_v2').where('chave', 'in', chunk).get();
+        const grouped = new Map();
+        snap.docs.forEach(doc => {
+          const row = { id: doc.id, ...doc.data() };
+          const list = grouped.get(row.chave) || [];
+          list.push(row);
+          grouped.set(row.chave, list);
+        });
+        chunk.forEach(chave => rememberCardSummary(chave, summarizeDivergences(grouped.get(chave) || [], chave)));
+      }
+      state.visibleLookupAt = Date.now();
+      $$('.chamado-item[data-chamado-id]').forEach(renderCardFromCache);
+    } catch (e) {
+      console.warn('[Comercial V2.3.3] Não consegui atualizar os cards visíveis:', e);
+    } finally {
+      state.visibleLookupBusy = false;
+    }
+  }
 
   function parseKey(v) {
     const s = onlyDigits(v);
@@ -169,25 +311,27 @@
     const style = document.createElement('style');
     style.id = 'comercial-v2-css';
     style.textContent = `
-      .comercial-v2-button{display:inline-flex!important;align-items:center!important;justify-content:center!important;width:27px!important;height:27px!important;margin-left:4px!important;padding:2px!important;border-radius:6px!important;border:1px solid #ec9dc7!important;background:#ffe9f3!important;cursor:pointer!important}
-      .comercial-v2-button img{width:21px;height:21px;object-fit:contain}
+      .comercial-v2-button{width:24px!important;height:24px!important;padding:1px!important;border:1px solid #ec9dc7!important;background:#ffe9f3!important;border-radius:5px!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;vertical-align:middle!important;margin-left:2px!important;cursor:pointer!important}
+      .comercial-v2-button:hover{background:#ffd7e7!important;border-color:#d91e74!important}.comercial-v2-button img{width:18px!important;height:18px!important;display:block!important;border-radius:4px!important}
       .cv-backdrop{display:none;position:fixed;inset:0;z-index:2147483644;background:#111827a6;align-items:center;justify-content:center;padding:12px;font:13px system-ui,Arial;color:#18243a}
       .cv-backdrop.open{display:flex}.cv-window{background:#fff;width:min(710px,100%);max-height:94vh;overflow:auto;border-radius:15px;box-shadow:0 22px 70px #0006}
-      .cv-header{display:flex;align-items:center;gap:10px;padding:14px 17px;border-bottom:1px solid #e6eaf1}.cv-header img{width:32px;height:32px;border-radius:7px}.cv-header strong{font-size:16px}.cv-header small{display:block;color:#6b7280}.cv-header button{margin-left:auto}
-      .cv-content{display:grid;gap:12px;padding:15px 17px}.cv-info{background:#fff2f7;border:1px solid #ffcfe3;padding:10px 12px;border-radius:10px;line-height:1.6;overflow-wrap:anywhere}
+      .cv-header{display:flex;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid #e5e7eb}.cv-header img{width:42px;height:42px;border-radius:12px}.cv-header strong{font-size:18px}.cv-header small{display:block;color:#687386}.cv-header button{margin-left:auto}
+      .cv-content{display:grid;gap:12px;padding:18px}.cv-info{border:1px solid #dbeafe;background:#eff6ff;color:#1e3a8a;padding:10px 12px;border-radius:12px;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
       .cv-content label{display:grid;gap:5px;font-size:12px;font-weight:700}.cv-content select,.cv-content input,.cv-content textarea{box-sizing:border-box;width:100%;padding:9px 10px;color:#162238;background:white;border:1px solid #d4dce9;border-radius:8px;font:13px system-ui}
       .cv-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.cv-card{padding:10px 12px;border:1px solid #e6eaf1;border-radius:9px;background:#f8fafc;line-height:1.55}
-      .cv-hint{font-size:11px;color:#65758b;line-height:1.5}.cv-buttons{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid #e6eaf1;flex-wrap:wrap}.cv-button{padding:9px 12px;border:1px solid #d6deea;background:white;color:#1a2941;border-radius:8px;font:700 12px system-ui;cursor:pointer}.cv-button:disabled{opacity:.55;cursor:not-allowed}.cv-button.primary{background:#d91e74;border-color:#d91e74;color:#fff}.cv-login{display:grid;gap:10px;padding:12px;border:1px solid #dce4ee;border-radius:10px}
-      .cv-session{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;background:#f3f7fc;border:1px solid #dbe3ee;border-radius:9px;font-size:12px;flex-wrap:wrap}.cv-session b{color:#14213d}.cv-session small{color:#5c6a7c}
-      .cv-login-entry{padding:10px 12px;border:1px solid #ffd8e9;border-radius:10px;background:#fff5fa;display:flex;gap:10px;align-items:center;flex-wrap:wrap}.cv-login-entry span{font-size:11px;color:#66768c}
-      .cv-login-help{font-size:11px;line-height:1.5;color:#6b7280}
-      .cv-description{font-size:11px;color:#66768c;font-weight:400}.cv-pill{display:inline-flex;padding:3px 8px;border-radius:30px;background:#fff0f6;color:#a51d62;font-size:11px;font-weight:700}.cv-hidden{display:none!important}@media(max-width:620px){.cv-grid{grid-template-columns:1fr}}
+      .cv-hint{font-size:11px;color:#65758b;line-height:1.5}.cv-buttons{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid #e6eaf1;flex-wrap:wrap}.cv-button{padding:9px 12px;border:1px solid #d6deea;background:white;color:#1a2941;border-radius:8px;font:700 12px system-ui;cursor:pointer}.cv-button:disabled{opacity:.55;cursor:not-allowed}.cv-button.primary{background:#d91e74;border-color:#d91e74;color:#fff}.cv-login{display:grid;gap:10px;padding:10px 12px;border:1px solid #dbeafe;background:#f8fafc;border-radius:12px}
+      .cv-session{padding:10px 12px;border-radius:12px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.cv-session.ok{background:#ecfdf3;color:#067647;border-color:#bbf7d0}.cv-session b{color:inherit}.cv-session small{color:inherit;opacity:.9}
+      .cv-login-entry{padding:10px 12px;border:1px solid #dbeafe;background:#f8fafc;border-radius:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}.cv-login-entry span{font-size:11px;color:#64748b}
+      .cv-login-help{font-size:11px;line-height:1.5;color:#64748b}
+      .cv-description{font-size:11px;color:#66768c;font-weight:400}.cv-pill{display:inline-flex;padding:3px 8px;border-radius:30px;background:#fff0f6;color:#a51d62;font-size:11px;font-weight:700}.cv-hidden{display:none!important}
+      .comercial-box{clear:both;margin:9px 0 10px;padding:0;border:1px solid rgba(217,30,116,.18);background:#fff;border-radius:12px;color:#172033;font-size:12px;line-height:1.35;overflow:hidden;box-shadow:0 10px 22px rgba(15,23,42,.10)}.comercial-box-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 9px;font-weight:900;color:#fff;background:linear-gradient(135deg,#d91e74,#fb7185)}.comercial-box-title{display:inline-flex;align-items:center;gap:6px;min-width:0}.comercial-box-title img{width:18px;height:18px;border-radius:5px;flex:0 0 auto}.comercial-chip{display:inline-flex;align-items:center;border-radius:999px;padding:2px 7px;font-size:10px;font-weight:900;background:rgba(255,255,255,.96);color:#be185d;border:1px solid rgba(255,255,255,.65);white-space:nowrap}.comercial-box-body{padding:8px 9px 9px;background:#f8fafc;border-left:4px solid #d91e74}.comercial-last-text{margin-top:3px;padding:6px 7px;border-radius:9px;background:#fff;border:1px solid #e2e8f0;color:#334155;overflow-wrap:anywhere;white-space:pre-wrap}.comercial-box small{color:#64748b;display:block;margin-top:5px}.comercial-box.comercial-status-em_crf .comercial-box-head{background:linear-gradient(135deg,#2563eb,#38bdf8)}.comercial-box.comercial-status-concluida .comercial-box-head{background:linear-gradient(135deg,#067647,#12b76a)}.comercial-box.comercial-status-devolucao .comercial-box-head{background:linear-gradient(135deg,#b42318,#ef4444)}
+      .chamado-item[data-comercial-status='aberta']{border-left:4px solid #d91e74!important}.chamado-item[data-comercial-status='em_crf']{border-left:4px solid #2563eb!important}.chamado-item[data-comercial-status='concluida']{border-left:4px solid #12b76a!important}.chamado-item[data-comercial-status='devolucao']{border-left:4px solid #ef4444!important}@media(max-width:620px){.cv-grid{grid-template-columns:1fr}}
     `;
     document.head.appendChild(style);
     const modal = document.createElement('div');
     modal.id = 'comercial-v2-modal'; modal.className = 'cv-backdrop';
     modal.innerHTML = `<div class="cv-window" role="dialog" aria-modal="true" aria-label="Comercial V2">
-      <div class="cv-header"><img src="${ICON}" alt=""><div><strong>Comercial — Ocorrências</strong><small>V2.3.2 • Divergências e respostas por setor</small></div><button class="cv-button" id="cv-close" type="button">✕</button></div>
+      <div class="cv-header"><img src="${ICON}" alt=""><div><strong>Abrir Comercial</strong><small>NF • Divergência Comercial</small></div><button class="cv-button" id="cv-close" type="button">✕</button></div>
       <div class="cv-content">
         <div class="cv-info" id="cv-info"></div>
         <div class="cv-session"><div id="cv-session-text">Verificando login do Comercial...</div><button type="button" class="cv-button cv-hidden" id="cv-logout">Sair / trocar conta</button></div>
@@ -390,33 +534,39 @@
     const user = state.user || auth.currentUser;
     const profile = state.profile;
     const line = $('#cv-session-text');
+    const bar = line?.closest?.('.cv-session');
     if (!line) return;
     const logout = $('#cv-logout');
     logout?.classList.toggle('cv-hidden', !user);
     if (!user) {
-      line.textContent = 'Você ainda não entrou no Comercial. Use Google ou e-mail/senha abaixo.';
+      bar?.classList.remove('ok');
+      line.textContent = 'Entre com Google ou e-mail/senha do Comercial.';
       return;
     }
     const nome = trim(profile?.nome || user.displayName || user.email || 'Usuário');
     const email = trim(user.email || '');
     const papel = trim(profile?.papel || 'sem perfil');
+    bar?.classList.toggle('ok', Boolean(profile && profile.ativo !== false));
     line.replaceChildren();
     const strong = document.createElement('b');
-    strong.textContent = 'Conectado como: ' + nome;
+    strong.textContent = 'Salvando como ' + nome;
     const small = document.createElement('small');
-    small.textContent = ' • ' + email + ' • Perfil: ' + papel;
+    small.textContent = email ? `${email} • Perfil: ${papel}` : `Perfil: ${papel}`;
     line.append(strong, small);
   }
   async function loadForm() {
     const allowed = canRecord();
     renderSession();
-    $('#cv-login-entry').classList.toggle('cv-hidden', !!state.user);
+    $('#cv-login-entry').classList.toggle('cv-hidden', !!(state.user && state.profile && state.profile.ativo !== false));
     if (state.user) clearLoginFields();
     $('#cv-form').classList.toggle('cv-hidden',!allowed);
     $('#cv-save').disabled = !allowed;
     $('#cv-login-status').textContent = !state.user ? 'Entre no Comercial' : !state.profile ? 'Conta conectada sem perfil em usuarios. Use Sair / trocar conta para escolher outra.' : state.profile.ativo === false ? 'Conta inativa' : 'Este perfil não pode registrar eventos';
     if (!allowed) return;
     await Promise.all([loadCatalog(),loadNote()]);
+    const summary = summarizeDivergences(state.divergences, state.data?.chave);
+    rememberCardSummary(state.data?.chave, summary);
+    renderCardBox(state.card, summary);
     const dropdown=$('#cv-div');
     dropdown.replaceChildren(new Option('+ Abrir nova divergência',''));
     for (const d of state.divergences) {
@@ -658,6 +808,10 @@
           usuarioId:state.user.uid,usuarioNome:opName,usuarioEmail:state.user.email||'',criadoEm:now
         });
       });
+      await loadNote();
+      const summary = summarizeDivergences(state.divergences, state.data?.chave);
+      rememberCardSummary(state.data?.chave, summary);
+      renderCardBox(state.card, summary);
       alertUser(action==='responder'?'Resposta registrada e relógio encerrado.':action==='abrir'?'Divergência aberta e encaminhada.':'Evento gravado com sucesso.');
       close(true);
     } catch(e) {
@@ -670,15 +824,17 @@
     if (!extract(card)) return; // Sem Firebase. Apenas lê o HTML do Infradesk.
     const toolbar=$('.toolbar-atendente',card)||$('.list-toolbar',card)||card;
     const button=document.createElement('button');
-    button.type='button';button.className='comercial-v2-button';button.title='Registrar divergências e respostas no Comercial';
+    button.type='button';button.className='comercial-v2-button';button.title='Abrir Comercial';
     const icon=document.createElement('img');icon.src=ICON;icon.alt='Comercial';button.append(icon);
     button.onclick=e=>{e.preventDefault();e.stopPropagation();openCard(card);};
-    const xabuia=$('.xabuia-card-btn',toolbar);
-    if(xabuia)xabuia.insertAdjacentElement('afterend',button);else toolbar.append(button);
+    const anchor=$('.btn-anexo', toolbar);
+    if(anchor?.parentElement) anchor.insertAdjacentElement('beforebegin', button);
+    else toolbar.append(button);
+    renderCardFromCache(card);
   }
-  function scan() { $$('.chamado-item[data-chamado-id]').forEach(addButton); }
+  function scan() { $$('.chamado-item[data-chamado-id]').forEach(card => { addButton(card); renderCardFromCache(card); }); }
   let timer=null;
-  const observer=new MutationObserver(()=>{clearTimeout(timer);timer=setTimeout(scan,400);});
+  const observer=new MutationObserver(()=>{clearTimeout(timer);timer=setTimeout(()=>{scan();refreshVisibleCards(false);},500);});
   auth.onAuthStateChanged(user=>{
     if (!user || state.user?.uid!==user.uid) {
       state.user=user;state.profile=null;state.profileAt=0;
@@ -688,7 +844,7 @@
   });
   function boot() {
     createUI();scan();observer.observe(document.body,{childList:true,subtree:true});
-    console.info('[Comercial V2.3.2] Pronto. Nenhuma consulta automática de Firestore por card.');
+    console.info('[Comercial V2.3.3] Pronto. Cards consultam apenas chaves visíveis, sem listeners em tempo real.');
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
