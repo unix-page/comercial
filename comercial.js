@@ -1,128 +1,469 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Divergências V2
+// @name         Comercial • Infradesk • Registro de divergências V2.3
 // @namespace    comercial/infradesk
-// @version      2.0.1
-// @description  Registra divergências e movimentações por chave NF-e, integrado ao Comercial V2.
-// @match        https://*.infradesk.app/backend/chamados/painel*
+// @version      2.3.0
+// @description  Uma NF por chave; divergências independentes; cada resposta encerra uma passagem. Sem consultas automáticas por card.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
+// @noframes
 // @icon         https://unix-page.github.io/comercial/comercial.png
+// @homepageURL  https://unix-page.github.io/comercial/
 // @grant        none
 // ==/UserScript==
-(function(){'use strict';
-if(window.__COMERCIAL_APP_RUNNING__)return;
-if(typeof firebase==='undefined'||!firebase.auth||!firebase.firestore){console.error('[Comercial V2] Firebase compat indisponível. Instale o loader oficial.');return;}
-window.__COMERCIAL_APP_RUNNING__=true;window.__COMERCIAL_APP_VERSION__='2.0.1';
-const URL_ICON='https://unix-page.github.io/comercial/comercial.png';
-const firebaseConfig={apiKey:'AIzaSyBpWLYK1cejNpUAo5NMk8ecSSQrYMVf6-0',authDomain:'comercial-divergencias.firebaseapp.com',projectId:'comercial-divergencias',storageBucket:'comercial-divergencias.firebasestorage.app',messagingSenderId:'602637992147',appId:'1:602637992147:web:fc930856cc72f598a31426'};
-const appName='comercial-divergencias-app';let app;try{app=firebase.app(appName);}catch(_){app=firebase.initializeApp(firebaseConfig,appName);}const auth=app.auth(),db=app.firestore(),F=firebase.firestore.FieldValue;
-const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
-const dig=s=>String(s||'').replace(/\D/g,'');const clean=s=>String(s||'').replace(/\s+/g,' ').trim();const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const sectors={fiscal:'Fiscal (Sicofe)',comercial:'Comercial',cadastro:'Cadastro'};
-const state={user:null,profile:null,card:null,data:null,notes:[],buyers:[],suppliers:new Map(),types:[],loadedAt:0,selected:null,busy:false};
-function parseKey(v){const s=dig(v);if(s.length!==44)return null;let sum=0,p=2;for(let i=42;i>=0;i--){sum+=Number(s[i])*p;p=p===9?2:p+1;}const r=sum%11,dv=r<2?0:11-r;if(Number(s[43])!==dv)return null;return{chave:s,cnpj:s.slice(6,20),numeroNf:String(parseInt(s.slice(25,34),10)),modelo:s.slice(20,22),serie:s.slice(22,25)};}
-function extract(card){const text=card.innerText||card.textContent||'';const matched=text.match(/\b\d{44}\b/)||text.match(/(?:\d[\s.-]*){44}/);const key=parseKey(matched?.[0]);const link=$('.item-data-fornecedor',card);const fornecedorId=link?.getAttribute('href')?.match(/\/fornecedores\/contato\/(\d+)/i)?.[1]||'';const fornecedorNome=clean(link?.textContent||'Fornecedor não identificado').replace(/^#?\d+\s+/,'');return {...(key||{}),chamadoInfradeskId:card.getAttribute('data-chamado-id')||'',fornecedorId,fornecedorNome,empresa:clean($('.item-data-empresa',card)?.textContent||''),tipoNota:clean($('.item-subcategoria',card)?.getAttribute('title')||$('.item-subcategoria',card)?.textContent||''),descricaoInfradesk:clean($('.item-ultima-descricao-copy',card)?.textContent||'')};}
-function notify(msg,bad=false){let el=$('#comercial-v2-toast');if(!el){el=document.createElement('div');el.id='comercial-v2-toast';document.body.appendChild(el);}el.textContent=msg;el.style.cssText=`position:fixed;z-index:2147483647;top:20px;right:20px;max-width:430px;background:${bad?'#a92020':'#146e57'};color:white;padding:12px 16px;border-radius:12px;font:13px system-ui;box-shadow:0 12px 30px #0002`;clearTimeout(notify.t);notify.t=setTimeout(()=>el.remove(),6500);}
-function ensureUI(){if($('#comercial-v2-modal'))return;const style=document.createElement('style');style.textContent=`.comercial-v2-button{display:inline-flex!important;align-items:center!important;justify-content:center!important;background:#ffe9f3!important;border:1px solid #f1a3c9!important;border-radius:6px!important;width:27px!important;height:27px!important;padding:2px!important;margin-left:4px!important;cursor:pointer!important}.comercial-v2-button img{width:21px;height:21px;object-fit:contain}.comercial-v2-overlay{position:fixed;inset:0;background:#0f172a99;z-index:2147483644;display:none;align-items:center;justify-content:center;padding:14px;font:13px system-ui;color:#172033}.comercial-v2-overlay.open{display:flex}.comercial-v2-modal{background:white;width:min(650px,100%);max-height:94vh;overflow:auto;border-radius:16px;box-shadow:0 20px 60px #0005}.comercial-v2-head{display:flex;align-items:center;gap:10px;padding:15px 18px;border-bottom:1px solid #e7eaf1}.comercial-v2-head img{width:35px;height:35px;border-radius:8px}.comercial-v2-head strong{font-size:16px}.comercial-v2-head small{display:block;color:#627085}.comercial-v2-head button{margin-left:auto}.comercial-v2-body{padding:16px;display:grid;gap:12px}.comercial-v2-body label{font-weight:650;display:grid;gap:4px}.comercial-v2-body input,.comercial-v2-body select,.comercial-v2-body textarea{display:block;width:100%;border:1px solid #d7e0eb;background:#fff;color:#172033;padding:9px 10px;border-radius:9px;font:inherit;box-sizing:border-box}.comercial-v2-info{padding:10px;background:#fff3f8;border:1px solid #fbcde1;border-radius:9px;color:#7b284d;overflow-wrap:anywhere}.comercial-v2-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.comercial-v2-btn{border-radius:9px;border:1px solid #d6ddeb;background:#fff;color:#172033;padding:9px 12px;font-weight:700;cursor:pointer}.comercial-v2-btn.primary{background:#df2578;border-color:#df2578;color:#fff}.comercial-v2-actions{display:flex;justify-content:flex-end;gap:8px;border-top:1px solid #e6eaf1;padding:12px 16px;flex-wrap:wrap}.comercial-v2-help{color:#657186;font-size:11px}.comercial-v2-login{border:1px solid #e3e8ef;padding:12px;border-radius:10px;display:grid;gap:8px}.comercial-v2-login-actions{display:flex;gap:8px;flex-wrap:wrap}@media(max-width:550px){.comercial-v2-row{grid-template-columns:1fr}}`;document.head.appendChild(style);
-const overlay=document.createElement('div');overlay.id='comercial-v2-modal';overlay.className='comercial-v2-overlay';overlay.innerHTML=`<div class="comercial-v2-modal" role="dialog" aria-modal="true" aria-label="Comercial V2"><div class="comercial-v2-head"><img src="${URL_ICON}" alt=""><div><strong>Registrar divergência</strong><small>Comercial V2 • Histórico único por NF-e</small></div><button class="comercial-v2-btn" id="comercial-v2-close">✕</button></div><div class="comercial-v2-body"><div class="comercial-v2-info" id="cv-info"></div><div id="cv-auth" class="comercial-v2-login"><span id="cv-auth-info">Entre com sua conta Comercial</span><div class="comercial-v2-row"><input id="cv-email" type="email" placeholder="E-mail"><input id="cv-password" type="password" placeholder="Senha"></div><div class="comercial-v2-login-actions"><button class="comercial-v2-btn" id="cv-login-email">Entrar por e-mail</button><button class="comercial-v2-btn" id="cv-login-google">Entrar com Google</button></div></div><div id="cv-form" style="display:none;gap:10px"><label>Divergência nesta nota<select id="cv-divergence"><option value="">Nova divergência</option></select></label><div class="comercial-v2-row"><label>Setor responsável<select id="cv-sector"><option value="">Escolha</option><option value="fiscal">Fiscal (Sicofe)</option><option value="comercial">Comercial</option><option value="cadastro">Cadastro</option></select></label><label>Tipo de divergência<select id="cv-type"><option value="">Selecione o setor</option></select></label></div><label id="cv-buyer-wrap">Comprador responsável<select id="cv-buyer"><option value="">Escolha</option></select></label><label>Ação<select id="cv-action"><option value="abrir">Abrir divergência</option></select></label><label>Observação / resultado<textarea id="cv-description" rows="3" placeholder="Ex.: Enviado ao comprador via WhatsApp. / XML baixado. / Pedido corrigido."></textarea></label><div class="comercial-v2-help">As ações são registradas pela CRF. Cada encaminhamento cria uma passagem; retorno/conclusão fecha a passagem e preserva o tempo real entre timestamps do Firestore.</div></div></div><div class="comercial-v2-actions"><button class="comercial-v2-btn" id="cv-cancel">Cancelar</button><button class="comercial-v2-btn primary" id="cv-save">Salvar evento</button></div></div>`;document.body.appendChild(overlay);
-$('#comercial-v2-close').onclick=close;$('#cv-cancel').onclick=close;
-$('#cv-login-google').onclick=async()=>{
-  const button=$('#cv-login-google');
-  if(button.disabled)return;
-  button.disabled=true;
-  const initialLabel=button.textContent;
-  button.textContent='Abrindo Google...';
-  try{
-    // A abertura do popup acontece diretamente no clique, sem await prévio.
-    await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
-    await refreshProfile();
-    await loadIntoForm();
-    if(!state.profile)notify('Google autenticou, mas sua conta não possui perfil na coleção usuarios. Solicite acesso.',true);
-    else if(state.profile.ativo===false)notify('Google autenticou, mas seu perfil está inativo.',true);
-    else if(!canRecord())notify('Google autenticou, mas seu perfil não permite registrar eventos no Infradesk.',true);
-  }catch(e){
-    const code=e?.code||'erro-desconhecido';
-    const map={
-      'auth/unauthorized-domain':'Este domínio do Infradesk não está autorizado no Firebase Authentication: '+location.hostname+'. O administrador deve adicioná-lo em Authentication > Settings > Authorized domains.',
-      'auth/popup-blocked':'O navegador bloqueou a janela do Google. Permita pop-ups para '+location.hostname+' e tente novamente.',
-      'auth/popup-closed-by-user':'A janela do Google foi fechada antes de concluir o login. Tente novamente.',
-      'auth/cancelled-popup-request':'Outra tentativa de login interrompeu esta. Aguarde e tente novamente.',
-      'auth/operation-not-allowed':'Login Google não está habilitado no Firebase Authentication deste projeto.',
-      'auth/network-request-failed':'Falha na rede ou bloqueio por extensão/proxy. Confira a conexão e tente novamente.',
-      'auth/web-storage-unsupported':'O navegador está bloqueando o armazenamento necessário para a sessão. Verifique permissões, modo anônimo ou políticas corporativas.',
-      'auth/internal-error':'Falha interna do login Google; verifique o Console e as políticas de pop-up/cookies do navegador.'
-    };
-    console.error('[Comercial V2] Falha no login Google:',code,e);
-    notify(map[code]||('Google: '+(e?.message||code)),true);
-  }finally{
-    button.disabled=false;
-    button.textContent=initialLabel;
+(function () {
+  'use strict';
+  if (window.__COMERCIAL_APP_RUNNING__) return;
+  if (!window.firebase?.auth || !window.firebase?.firestore) {
+    console.error('[Comercial V2.3] Firebase compat não encontrado. Confira o loader.');
+    return;
   }
-};
-$('#cv-login-email').onclick=async()=>{try{await auth.signInWithEmailAndPassword($('#cv-email').value.trim(),$('#cv-password').value);await refreshProfile();await loadIntoForm();}catch(e){notify(e.message||'Login incorreto',true);}};
-$('#cv-divergence').onchange=renderSelection;$('#cv-sector').onchange=renderSector;$('#cv-action').onchange=renderAction;$('#cv-save').onclick=save;
-}
-function close(){if(state.busy)return;$('#comercial-v2-modal')?.classList.remove('open');state.card=null;state.data=null;state.selected=null;}
-function canRecord(){return !!(state.user&&state.profile&&state.profile.ativo!==false&&['admin','usuario','crf'].includes(state.profile.papel));}
-async function refreshProfile(){state.user=auth.currentUser;state.profile=null;if(!state.user)return;const snap=await db.collection('usuarios').doc(state.user.uid).get();state.profile=snap.exists?{id:snap.id,...snap.data()}:null;}
-async function lookupData(){const key=state.data.chave;if(!key)return;const now=Date.now();if(now-state.loadedAt>5*60*1000){const[b,t]=await Promise.all([db.collection('compradores_v2').get(),db.collection('tipos_divergencia_v2').get()]);state.buyers=b.docs.map(d=>({id:d.id,...d.data()}));state.types=t.docs.map(d=>({id:d.id,...d.data()}));state.loadedAt=now;}
-const [noteSnap,supplierSnap,divSnap]=await Promise.all([db.collection('notas_v2').doc(key).get(),db.collection('fornecedores_v2').doc(state.data.cnpj).get(),db.collection('divergencias_v2').where('chave','==',key).limit(40).get()]);state.supplier=supplierSnap.exists?supplierSnap.data():null;state.note=noteSnap.exists?noteSnap.data():null;state.notes=divSnap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(b.criadoEm?.toMillis?.()||0)-(a.criadoEm?.toMillis?.()||0));}
-async function openCard(card){ensureUI();const data=extract(card);if(!data.chave){notify('A chave da NF-e está ausente ou inválida (44 dígitos / dígito verificador).',true);return;}state.card=card;state.data=data;$('#cv-info').innerHTML=`<strong>Chamado:</strong> ${esc(data.chamadoInfradeskId||'—')} • <strong>NF:</strong> ${esc(data.numeroNf)} • <strong>CNPJ:</strong> ${esc(data.cnpj)}<br><strong>Fornecedor:</strong> ${esc(data.fornecedorNome)}<br><strong>Chave:</strong> ${esc(data.chave)}`;$('#cv-description').value='';$('#comercial-v2-modal').classList.add('open');try{await refreshProfile();await loadIntoForm();}catch(e){notify(e.message||'Falha ao abrir',true);}}
-async function loadIntoForm(){const logged=canRecord();$('#cv-auth').style.display=logged?'none':'grid';$('#cv-form').style.display=logged?'grid':'none';$('#cv-save').disabled=!logged;$('#cv-auth-info').textContent=state.user?(!state.profile?'Perfil ausente em usuarios':state.profile.ativo===false?'Conta inativa':'Seu perfil não permite registrar divergências'):'Entre com sua conta Comercial';if(!logged)return;
-await lookupData();const sel=$('#cv-divergence');sel.replaceChildren(new Option('Nova divergência',''));for(const d of state.notes)sel.add(new Option(`${d.tipoNome||'Divergência'} • ${d.status||'—'} • ${d.compradorNome||sectors[d.setor]||''}`,d.id));sel.value='';renderSelection();}
-function renderSelection(){state.selected=state.notes.find(d=>d.id===$('#cv-divergence').value)||null;const d=state.selected;$('#cv-sector').value=d?.setor||'';renderSector();if(d){$('#cv-type').value=d.tipoId||'';$('#cv-buyer').value=d.compradorId||'';}const action=$('#cv-action');const options=d ? (['concluida','devolucao'].includes(d.status)?[['reabrir','Reabrir / novo encaminhamento'],['observacao','Registrar observação']]:[['observacao','Registrar observação'],['encaminhar','Encaminhar / reenviar a setor'],['retorno','Registrar retorno à CRF'],['concluir','Concluir divergência'],['devolver','Registrar devolução / recusa']]):[['abrir','Abrir e encaminhar ao setor']];action.replaceChildren(...options.map(([v,t])=>new Option(t,v)));renderAction();}
-function renderSector(){const setor=$('#cv-sector').value;const typ=$('#cv-type');const previous=typ.value;typ.replaceChildren(new Option('Selecione o tipo',''));state.types.filter(t=>t.ativo!==false&&t.setor===setor).sort((a,b)=>a.nome.localeCompare(b.nome)).forEach(t=>typ.add(new Option(t.nome,t.id)));if([...typ.options].some(o=>o.value===previous))typ.value=previous;$('#cv-buyer-wrap').style.display=setor==='comercial'?'grid':'none';const buyers=(state.supplier?.compradorIds||[]).map(id=>state.buyers.find(b=>b.id===id)).filter(b=>b&&b.ativo!==false);const bs=$('#cv-buyer');const prior=bs.value;bs.replaceChildren(new Option(buyers.length?'Selecione o comprador vinculado':'Nenhum comprador ativo vinculado',''));buyers.forEach(b=>bs.add(new Option(b.nome,b.id)));if(buyers.some(b=>b.id===prior))bs.value=prior;renderAction();}
-function renderAction(){const action=$('#cv-action').value,d=state.selected;const needsSector=['abrir','encaminhar','reabrir'].includes(action);$('#cv-sector').disabled=!!d&&!needsSector;$('#cv-type').disabled=!!d;$('#cv-buyer').disabled=!!d&&!needsSector;
-// Em encaminhamento a escolha do novo setor/comprador é livre, mas a classificação original permanece imutável.
-if(d&&!needsSector){$('#cv-sector').value=d.setor;$('#cv-type').value=d.tipoId;renderBuyerFromRecord(d);}if(d&&needsSector&&$('#cv-sector').value!==d.setor){/* setor de destino alterável */}}
-function renderBuyerFromRecord(d){const el=$('#cv-buyer');if([...el.options].some(o=>o.value===d.compradorId))el.value=d.compradorId;}
-function fieldTimestamp(){return F.serverTimestamp();}
-async function save(){if(state.busy||!canRecord())return;const action=$('#cv-action').value,d=state.selected,data=state.data;if(!data?.chave)return;let setor=$('#cv-sector').value,typeId=$('#cv-type').value,buyerId=$('#cv-buyer').value;const noteRef=db.collection('notas_v2').doc(data.chave),oldD=d||null;
-if(action==='abrir'&&(!setor||!typeId))return notify('Escolha setor e tipo da divergência.',true);
-if(['abrir','encaminhar','reabrir'].includes(action)&&!setor)return notify('Selecione o setor responsável.',true);
-if(['abrir','encaminhar','reabrir'].includes(action)&&setor==='comercial'&&!buyerId)return notify('Selecione um comprador ativo vinculado ao CNPJ no portal administrativo.',true);
-if(!oldD&&action!=='abrir')return;
-const comment=clean($('#cv-description').value);if(!comment)return notify('Descreva a ocorrência ou resultado antes de salvar.',true);
-const type=state.types.find(t=>t.id===typeId),buyer=state.buyers.find(b=>b.id===buyerId);
-if(action==='abrir'&&(!type||type.setor!==setor||type.ativo===false))return notify('Tipo de divergência inválido.',true);
-if(['abrir','encaminhar','reabrir'].includes(action)&&setor==='comercial'&&(!buyer||buyer.ativo===false||!(state.supplier?.compradorIds||[]).includes(buyerId)))return notify('Comprador não está ativo ou vinculado ao CNPJ.',true);
-state.busy=true;$('#cv-save').disabled=true;$('#cv-save').textContent='Salvando...';try{
-const newDivRef=oldD?db.collection('divergencias_v2').doc(oldD.id):db.collection('divergencias_v2').doc();const eventRef=db.collection('eventos_v2').doc();const passRef=db.collection('passagens_v2').doc();const buyerName=buyer?.nome||'';
-await db.runTransaction(async tx=>{
-// Todas as leituras precedem qualquer escrita.
-const nSnap=await tx.get(noteRef);const divSnap=oldD?await tx.get(newDivRef):null;
-if(oldD&&!divSnap.exists)throw new Error('Divergência não encontrada; atualize a tela.');const prior=divSnap?.data()||null;
-if(oldD&&prior.status!==oldD.status)throw new Error('Outro operador modificou a divergência. Abra novamente antes de salvar.');
-const prevPass=prior?.passagemAbertaId?db.collection('passagens_v2').doc(prior.passagemAbertaId):null;
-const passSnap=prevPass?await tx.get(prevPass):null;
-const supplierRef=db.collection('fornecedores_v2').doc(data.cnpj);const supplierSnap=await tx.get(supplierRef);
-const now=fieldTimestamp();const operator=state.profile?.nome||state.user.displayName||state.user.email;
-let nextStatus=prior?.status||'aberta';if(action==='retorno')nextStatus='em_crf';if(['abrir','encaminhar','reabrir'].includes(action))nextStatus='aberta';if(action==='concluir')nextStatus='concluida';if(action==='devolver')nextStatus='devolucao';
-if(action==='reabrir'&&!['devolucao','concluida'].includes(prior?.status))throw new Error('Só é possível reabrir uma divergência encerrada.');
-if(!supplierSnap.exists){tx.set(supplierRef,{cnpj:data.cnpj,razaoSocial:clean(data.fornecedorNome)||'Não identificado',nomeInfradesk:data.fornecedorNome,origemRazaoSocial:'infradesk',compradorIds:[],ativo:true,criadoEm:now,atualizadoEm:now});}
-const noteFields={chave:data.chave,cnpj:data.cnpj,numeroNf:data.numeroNf,modelo:data.modelo,serie:data.serie,fornecedorNome:supplierSnap.exists?(supplierSnap.data().razaoSocial||data.fornecedorNome):data.fornecedorNome,nomeInfradesk:data.fornecedorNome,atualizadoEm:now,ultimaAcao:action,ultimaOcorrenciaTexto:comment,versao:2};
-if(data.chamadoInfradeskId)noteFields.chamadosInfradeskIds=F.arrayUnion(data.chamadoInfradeskId);
-if(!nSnap.exists)tx.set(noteRef,{...noteFields,criadoEm:now,divergenciasCount:action==='abrir'?1:0});else tx.update(noteRef,{...noteFields,...(action==='abrir'?{divergenciasCount:F.increment(1)}:{})});
-if(!prior){tx.set(newDivRef,{chave:data.chave,cnpj:data.cnpj,numeroNf:data.numeroNf,fornecedorNome:noteFields.fornecedorNome,criadoEm:now,atualizadoEm:now,abertoPor:state.user.uid,abertoPorNome:operator,setor,tipoId,tipoNome:type.nome,compradorId:setor==='comercial'?buyerId:'',compradorNome:setor==='comercial'?buyerName:'',status:'aberta',passagemAbertaId:passRef.id,passagensCount:1,ultimaOcorrenciaTexto:comment,ultimaOcorrenciaEm:now});}
-else{
-const update={atualizadoEm:now,status:nextStatus,ultimaOcorrenciaTexto:comment,ultimaOcorrenciaEm:now};
-if(['abrir','encaminhar','reabrir'].includes(action)){update.passagemAbertaId=passRef.id;update.passagensCount=F.increment(1);update.compradorId=setor==='comercial'?buyerId:'';update.compradorNome=setor==='comercial'?buyerName:'';}
-if(['retorno','concluir','devolver'].includes(action))update.passagemAbertaId=null;
-if(['concluir','devolver'].includes(action))update.resolvidoEm=now;
-if(action==='reabrir')update.resolvidoEm=null;
-tx.update(newDivRef,update);
-}
-if(prevPass&&passSnap?.exists&&['encaminhar','retorno','concluir','devolver'].includes(action)&&!passSnap.data().fimEm){tx.update(prevPass,{fimEm:now,fechadoPor:state.user.uid,fechamento:action});}
-if(['abrir','encaminhar','reabrir'].includes(action))tx.set(passRef,{chave:data.chave,divergenciaId:newDivRef.id,setor,compradorId:setor==='comercial'?buyerId:'',compradorNome:setor==='comercial'?buyerName:'',inicioEm:now,fimEm:null,criadoPor:state.user.uid,criadoPorNome:operator,chamadoInfradeskId:data.chamadoInfradeskId||''});
-tx.set(eventRef,{chave:data.chave,divergenciaId:newDivRef.id,acao:action,setor:needsSectorOf(action)?setor:prior?.setor||setor,compradorId:buyerId||prior?.compradorId||'',compradorNome:buyerName||prior?.compradorNome||'',texto:comment,chamadoInfradeskId:data.chamadoInfradeskId||'',usuarioId:state.user.uid,usuarioNome:operator,usuarioEmail:state.user.email,criadoEm:now});
-});
-notify('Evento registrado no histórico único da nota.');close();
-}catch(e){console.error('[Comercial V2]',e);notify(e.code==='permission-denied'?'Permissão negada: publique firestore.rules e confira seu perfil.':(e.message||'Falha ao salvar.'),true);}finally{state.busy=false;$('#cv-save').disabled=!canRecord();$('#cv-save').textContent='Salvar evento';}}
-function needsSectorOf(action){return ['abrir','encaminhar','reabrir'].includes(action);}
-function addButton(card){if($('.comercial-v2-button',card))return;const data=extract(card);if(!data.chave)return;const toolbar=$('.toolbar-atendente',card)||$('.list-toolbar',card)||card;const btn=document.createElement('button');btn.type='button';btn.className='comercial-v2-button';btn.title='Registrar divergência/ocorrência no Comercial V2';btn.innerHTML=`<img src="${URL_ICON}" alt="Comercial">`;btn.addEventListener('click',ev=>{ev.preventDefault();ev.stopPropagation();openCard(card);});const x=$('.xabuia-card-btn',toolbar);if(x)x.insertAdjacentElement('afterend',btn);else toolbar.appendChild(btn);}
-function scan(){$$('.chamado-item[data-chamado-id]').forEach(addButton);}
-let debounce=0;const ob=new MutationObserver(()=>{clearTimeout(debounce);debounce=setTimeout(scan,300);});
-auth.onAuthStateChanged(u=>{state.user=u;if(!u)state.profile=null;});
-function boot(){ensureUI();scan();ob.observe(document.body,{childList:true,subtree:true});window.addEventListener('focus',scan);console.log('[Comercial V2] ativo. Use somente com loader oficial.');}
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
+  window.__COMERCIAL_APP_RUNNING__ = true;
+  window.__COMERCIAL_APP_VERSION__ = '2.3.0';
+
+  const ICON = 'https://unix-page.github.io/comercial/comercial.png';
+  const CONFIG = {
+    apiKey: 'AIzaSyBpWLYK1cejNpUAo5NMk8ecSSQrYMVf6-0',
+    authDomain: 'comercial-divergencias.firebaseapp.com',
+    projectId: 'comercial-divergencias',
+    storageBucket: 'comercial-divergencias.firebasestorage.app',
+    messagingSenderId: '602637992147',
+    appId: '1:602637992147:web:fc930856cc72f598a31426'
+  };
+  let app;
+  try { app = firebase.app('comercial-divergencias-app'); }
+  catch (_) { app = firebase.initializeApp(CONFIG, 'comercial-divergencias-app'); }
+  const auth = app.auth();
+  const db = app.firestore();
+  const FV = firebase.firestore.FieldValue;
+  const $ = (selector, root = document) => root.querySelector(selector);
+  const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+  const onlyDigits = s => String(s ?? '').replace(/\D/g, '');
+  const trim = s => String(s ?? '').replace(/\s+/g, ' ').trim();
+  const escape = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
+  const sectors = { fiscal:'Fiscal (Sicofe)', comercial:'Comercial', cadastro:'Cadastro' };
+  const TTL = 15 * 60 * 1000;
+  const state = {
+    user: null, profile: null, profileAt: 0,
+    catalog: { types: [], responses: [], expiresAt: 0 },
+    buyers: new Map(),
+    card: null, data: null, supplier: null,
+    divergences: [], selected: null, busy: false,
+    viewToken: 0, mode: 'abrir'
+  };
+
+  function parseKey(v) {
+    const s = onlyDigits(v);
+    if (s.length !== 44 || /^(\d)\1{43}$/.test(s)) return null;
+    let sum = 0, mult = 2;
+    for (let i = 42; i >= 0; i--) { sum += Number(s[i]) * mult; mult = mult === 9 ? 2 : mult + 1; }
+    const rem = sum % 11;
+    if (Number(s[43]) !== (rem < 2 ? 0 : 11 - rem)) return null;
+    return { chave: s, cnpj: s.slice(6,20), numeroNf: String(Number(s.slice(25,34))), serie: s.slice(22,25) };
+  }
+  function extract(card) {
+    const text = card.innerText || card.textContent || '';
+    const match = text.match(/\b\d{44}\b/) || text.match(/(?:\d[\s.\-]*){44}/);
+    const parsed = parseKey(match?.[0]);
+    if (!parsed) return null;
+    const supplierLink = $('.item-data-fornecedor', card);
+    const fornecedorNome = trim(supplierLink?.textContent || 'Fornecedor não identificado').replace(/^#?\d+\s+/, '');
+    return {
+      ...parsed,
+      chamadoInfradeskId: card.getAttribute('data-chamado-id') || '',
+      fornecedorNome,
+      fornecedorId: supplierLink?.getAttribute('href')?.match(/\/fornecedores\/contato\/(\d+)/i)?.[1] || '',
+      empresa: trim($('.item-data-empresa',card)?.textContent || ''),
+      descricaoInfradesk: trim($('.item-ultima-descricao-copy',card)?.textContent || '')
+    };
+  }
+  function timeString(ts) {
+    if (!ts) return '—';
+    const dt = ts.toDate?.() || new Date(ts);
+    return isNaN(dt.getTime()) ? '—' : dt.toLocaleString('pt-BR');
+  }
+  function alertUser(text, isError = false) {
+    let el = $('#cv-toast');
+    if (!el) { el = document.createElement('div'); el.id = 'cv-toast'; document.body.append(el); }
+    el.textContent = text;
+    el.style.cssText = 'position:fixed;right:18px;top:18px;max-width:470px;z-index:2147483647;color:white;background:' + (isError ? '#a32236' : '#177554') + ';padding:12px 16px;border-radius:10px;font:13px system-ui;box-shadow:0 12px 30px #0003';
+    clearTimeout(alertUser.timer);
+    alertUser.timer = setTimeout(() => el.remove(), 6500);
+  }
+  function erroCrf(response) {
+    // Compatibilidade com as 11 respostas existentes. No futuro o admin pode salvar erroCrf=true.
+    const ascii = trim(response?.nome).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    return response?.erroCrf === true || ascii.startsWith('informacoes divergentes');
+  }
+  function canRecord() {
+    return !!(state.user && state.profile && state.profile.ativo !== false && ['admin','crf','usuario'].includes(state.profile.papel));
+  }
+  async function loadProfile(force=false) {
+    const user = auth.currentUser;
+    if (!user) { state.user = null; state.profile = null; return; }
+    if (!force && state.user?.uid === user.uid && state.profileAt && Date.now() - state.profileAt < 5 * 60 * 1000) return;
+    const snap = await db.collection('usuarios').doc(user.uid).get();
+    state.user = user;
+    state.profile = snap.exists ? snap.data() : null;
+    state.profileAt = Date.now();
+  }
+  async function loadCatalog(force=false) {
+    if (!force && Date.now() < state.catalog.expiresAt) return;
+    // Apenas ao abrir uma NF, sem listener. Listas curtas e compartilhadas por 15 minutos.
+    const [typeDocs, responseDocs] = await Promise.all([
+      db.collection('tipos_divergencia_v2').get(),
+      db.collection('respostas_v2').get()
+    ]);
+    state.catalog = {
+      types: typeDocs.docs.map(s => ({ id:s.id, ...s.data() })),
+      responses: responseDocs.docs.map(s => ({ id:s.id, ...s.data() })),
+      expiresAt: Date.now() + TTL
+    };
+  }
+  async function buyerRecord(id) {
+    if (!id) return null;
+    const cached = state.buyers.get(id);
+    if (cached && Date.now() < cached.expiresAt) return cached.value;
+    const snap = await db.collection('compradores_v2').doc(id).get();
+    const result = snap.exists ? { id:snap.id, ...snap.data() } : null;
+    state.buyers.set(id, { value:result, expiresAt: Date.now() + TTL });
+    return result;
+  }
+  async function loadNote() {
+    if (!state.data) return;
+    // Exatamente uma consulta por chave, uma leitura do fornecedor e somente compradores vinculados.
+    const [supplierSnap, divDocs] = await Promise.all([
+      db.collection('fornecedores_v2').doc(state.data.cnpj).get(),
+      db.collection('divergencias_v2').where('chave','==',state.data.chave).limit(40).get()
+    ]);
+    state.supplier = supplierSnap.exists ? supplierSnap.data() : null;
+    state.divergences = divDocs.docs.map(s=>({ id:s.id, ...s.data() }))
+      .sort((a,b)=>(b.criadoEm?.toMillis?.()||0)-(a.criadoEm?.toMillis?.()||0));
+    const ids = [...new Set((state.supplier?.compradorIds || []).filter(Boolean))];
+    await Promise.all(ids.map(id => buyerRecord(id)));
+  }
+  function activeBuyers() {
+    return (state.supplier?.compradorIds || [])
+      .map(id => state.buyers.get(id)?.value)
+      .filter(b => b && b.ativo !== false)
+      .sort((a,b)=>trim(a.nome).localeCompare(trim(b.nome),'pt-BR'));
+  }
+  function createUI() {
+    if ($('#comercial-v2-modal')) return;
+    const style = document.createElement('style');
+    style.id = 'comercial-v2-css';
+    style.textContent = `
+      .comercial-v2-button{display:inline-flex!important;align-items:center!important;justify-content:center!important;width:27px!important;height:27px!important;margin-left:4px!important;padding:2px!important;border-radius:6px!important;border:1px solid #ec9dc7!important;background:#ffe9f3!important;cursor:pointer!important}
+      .comercial-v2-button img{width:21px;height:21px;object-fit:contain}
+      .cv-backdrop{display:none;position:fixed;inset:0;z-index:2147483644;background:#111827a6;align-items:center;justify-content:center;padding:12px;font:13px system-ui,Arial;color:#18243a}
+      .cv-backdrop.open{display:flex}.cv-window{background:#fff;width:min(710px,100%);max-height:94vh;overflow:auto;border-radius:15px;box-shadow:0 22px 70px #0006}
+      .cv-header{display:flex;align-items:center;gap:10px;padding:14px 17px;border-bottom:1px solid #e6eaf1}.cv-header img{width:32px;height:32px;border-radius:7px}.cv-header strong{font-size:16px}.cv-header small{display:block;color:#6b7280}.cv-header button{margin-left:auto}
+      .cv-content{display:grid;gap:12px;padding:15px 17px}.cv-info{background:#fff2f7;border:1px solid #ffcfe3;padding:10px 12px;border-radius:10px;line-height:1.6;overflow-wrap:anywhere}
+      .cv-content label{display:grid;gap:5px;font-size:12px;font-weight:700}.cv-content select,.cv-content input,.cv-content textarea{box-sizing:border-box;width:100%;padding:9px 10px;color:#162238;background:white;border:1px solid #d4dce9;border-radius:8px;font:13px system-ui}
+      .cv-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.cv-card{padding:10px 12px;border:1px solid #e6eaf1;border-radius:9px;background:#f8fafc;line-height:1.55}
+      .cv-hint{font-size:11px;color:#65758b;line-height:1.5}.cv-buttons{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid #e6eaf1;flex-wrap:wrap}.cv-button{padding:9px 12px;border:1px solid #d6deea;background:white;color:#1a2941;border-radius:8px;font:700 12px system-ui;cursor:pointer}.cv-button:disabled{opacity:.55;cursor:not-allowed}.cv-button.primary{background:#d91e74;border-color:#d91e74;color:#fff}.cv-login{display:grid;gap:10px;padding:12px;border:1px solid #dce4ee;border-radius:10px}
+      .cv-pill{display:inline-flex;padding:3px 8px;border-radius:30px;background:#fff0f6;color:#a51d62;font-size:11px;font-weight:700}.cv-hidden{display:none!important}@media(max-width:620px){.cv-grid{grid-template-columns:1fr}}
+    `;
+    document.head.appendChild(style);
+    const modal = document.createElement('div');
+    modal.id = 'comercial-v2-modal'; modal.className = 'cv-backdrop';
+    modal.innerHTML = `<div class="cv-window" role="dialog" aria-modal="true" aria-label="Comercial V2">
+      <div class="cv-header"><img src="${ICON}" alt=""><div><strong>Comercial — Ocorrências</strong><small>V2.3 • Divergências e respostas por setor</small></div><button class="cv-button" id="cv-close" type="button">✕</button></div>
+      <div class="cv-content">
+        <div class="cv-info" id="cv-info"></div>
+        <div id="cv-login" class="cv-login cv-hidden"><strong id="cv-login-status">Entre no Comercial</strong><div class="cv-grid"><input id="cv-email" type="email" placeholder="E-mail"><input id="cv-pass" type="password" placeholder="Senha"></div><div><button class="cv-button" id="cv-email-login" type="button">Entrar com e-mail</button> <button class="cv-button" id="cv-google-login" type="button">Entrar com Google</button></div></div>
+        <div id="cv-form" class="cv-hidden" style="display:grid;gap:12px">
+          <label>Qual divergência você quer movimentar?<select id="cv-div"><option value="">+ Nova divergência</option></select></label>
+          <div id="cv-current" class="cv-card cv-hidden"></div>
+          <label>Próxima ação<select id="cv-action"></select></label>
+          <div class="cv-grid" id="cv-target"><label>Setor para encaminhamento<select id="cv-sector"><option value="">Selecione</option><option value="comercial">Comercial</option><option value="fiscal">Fiscal (Sicofe)</option><option value="cadastro">Cadastro</option></select></label><label id="cv-type-wrap">Tipo de divergência<select id="cv-type"><option value="">Selecione</option></select></label></div>
+          <label id="cv-buyer-wrap">Comprador responsável<select id="cv-buyer"><option value="">Selecione</option></select></label>
+          <label id="cv-response-wrap" class="cv-hidden">Resposta recebida do setor<select id="cv-response"><option value="">Selecione uma resposta</option></select></label>
+          <label>Observação / detalhes<textarea id="cv-text" rows="3" placeholder="Descreva o encaminhamento, retorno ou a conferência..."></textarea></label>
+          <p class="cv-hint" id="cv-hint">Registrar no Comercial não altera o chamado original do Infradesk.</p>
+        </div>
+      </div>
+      <div class="cv-buttons"><button type="button" class="cv-button" id="cv-refresh">Atualizar dados desta nota</button><button type="button" class="cv-button" id="cv-cancel">Cancelar</button><button type="button" class="cv-button primary" id="cv-save">Salvar ocorrência</button></div>
+    </div>`;
+    document.body.appendChild(modal);
+    $('#cv-close').onclick = close;
+    $('#cv-cancel').onclick = close;
+    $('#cv-div').onchange = renderSelected;
+    $('#cv-action').onchange = renderMode;
+    $('#cv-sector').onchange = () => { renderTypes(); renderBuyers(); };
+    $('#cv-google-login').onclick = async () => {
+      const b = $('#cv-google-login'); b.disabled = true;
+      try {
+        // Precisa ser chamado imediatamente no clique, antes de outras operações assíncronas.
+        await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
+        await loadProfile(true); await loadForm();
+      } catch(e) { console.error('[Comercial] Google:',e); alertUser(googleError(e),true); }
+      finally { b.disabled = false; }
+    };
+    $('#cv-email-login').onclick = async () => {
+      try { await auth.signInWithEmailAndPassword($('#cv-email').value.trim(),$('#cv-pass').value); await loadProfile(true); await loadForm(); }
+      catch(e) { alertUser(e?.message||'Erro no login.',true); }
+    };
+    $('#cv-refresh').onclick = async () => {
+      if (!state.data || state.busy) return;
+      $('#cv-refresh').disabled = true;
+      try { await loadProfile(true); state.catalog.expiresAt = 0; state.buyers.clear(); await loadForm(); alertUser('Cadastros e divergências atualizados.'); }
+      catch(e) { alertUser(e.message || 'Não foi possível atualizar.',true); }
+      finally { $('#cv-refresh').disabled = false; }
+    };
+    $('#cv-save').onclick = save;
+  }
+  function googleError(e) {
+    const messages={
+      'auth/popup-blocked':'Popup bloqueado. Autorize janelas para o Infradesk.',
+      'auth/unauthorized-domain':'Domínio não autorizado no Firebase Authentication: '+location.hostname,
+      'auth/popup-closed-by-user':'Janela de login fechada antes de concluir.',
+      'auth/network-request-failed':'Falha de rede ou bloqueio de conexão.',
+      'auth/operation-not-allowed':'Login Google desabilitado no projeto Firebase.'
+    };
+    return messages[e?.code] || e?.message || 'Não foi possível entrar com Google.';
+  }
+  function close() {
+    if (state.busy) return;
+    $('#comercial-v2-modal')?.classList.remove('open');
+    state.card = null; state.data = null; state.selected = null; state.viewToken++;
+  }
+  async function openCard(card) {
+    const data = extract(card);
+    if (!data) { alertUser('Chave de NF-e ausente ou inválida. Confira os 44 dígitos.',true); return; }
+    const token = ++state.viewToken;
+    state.card = card; state.data = data; state.selected = null;
+    $('#cv-info').innerHTML = `<b>Chamado:</b> ${escape(data.chamadoInfradeskId||'—')} • <b>NF:</b> ${escape(data.numeroNf)} • <b>CNPJ:</b> ${escape(data.cnpj)}<br><b>Fornecedor no Infradesk:</b> ${escape(data.fornecedorNome)}<br><b>Chave:</b> ${escape(data.chave)}`;
+    $('#cv-text').value = '';
+    $('#comercial-v2-modal').classList.add('open');
+    $('#cv-form').classList.add('cv-hidden');
+    $('#cv-save').disabled = true;
+    try {
+      await loadProfile();
+      if (token !== state.viewToken) return;
+      await loadForm();
+    } catch(e) { console.error('[Comercial V2.3] Abrir:',e); alertUser(e.message||'Não foi possível carregar a nota.',true); }
+  }
+  async function loadForm() {
+    const allowed = canRecord();
+    $('#cv-login').classList.toggle('cv-hidden',allowed);
+    $('#cv-form').classList.toggle('cv-hidden',!allowed);
+    $('#cv-save').disabled = !allowed;
+    $('#cv-login-status').textContent = !state.user ? 'Entre no Comercial' : !state.profile ? 'Seu UID não tem perfil em usuarios' : state.profile.ativo === false ? 'Conta inativa' : 'Sem permissão para registrar eventos';
+    if (!allowed) return;
+    await Promise.all([loadCatalog(),loadNote()]);
+    const dropdown=$('#cv-div');
+    dropdown.replaceChildren(new Option('+ Abrir nova divergência',''));
+    for (const d of state.divergences) {
+      const label = `${d.tipoNome||'Divergência'} • ${d.status||'—'} • ${d.compradorNome||sectors[d.setor]||'—'}`;
+      dropdown.add(new Option(label,d.id));
+    }
+    renderSelected();
+  }
+  function renderSelected() {
+    state.selected = state.divergences.find(d=>d.id===$('#cv-div').value)||null;
+    const d=state.selected;
+    const select=$('#cv-action');
+    const options = !d ? [['abrir','Abrir e encaminhar divergência']] :
+      d.passagemAbertaId ? [['responder','Registrar resposta recebida (para o relógio)'],['observacao','Adicionar observação (mantém relógio)']] :
+      ['concluida','devolucao'].includes(d.status) ? [['reabrir','Reabrir e encaminhar novamente'],['observacao','Adicionar observação ao histórico']] :
+      [['encaminhar','Encaminhar novamente'],['concluir','Concluir após validação CRF'],['devolver','Marcar para devolução/recusa'],['observacao','Adicionar observação']];
+    select.replaceChildren(...options.map(([v,t])=>new Option(t,v)));
+    const box=$('#cv-current');
+    box.classList.toggle('cv-hidden',!d);
+    if (d) {
+      const set=d.setorAtual || d.setor;
+      box.innerHTML = `<b>Divergência:</b> ${escape(d.tipoNome||'—')} <span class="cv-pill">${escape(d.status||'—')}</span><br><b>Setor atual:</b> ${escape(sectors[set]||set||'CRF')} • <b>Comprador:</b> ${escape(d.compradorAtualNome||d.compradorNome||'—')}<br><b>Passagem:</b> ${d.passagemAbertaId ? 'aguardando resposta (tempo contando)' : 'sem relógio ativo'} • <b>Última ocorrência:</b> ${escape(timeString(d.ultimaOcorrenciaEm))}`;
+      $('#cv-sector').value = d.setorAtual || d.setor || '';
+    } else $('#cv-sector').value='';
+    renderMode();
+  }
+  function renderMode() {
+    const d=state.selected;
+    const mode=state.mode=$('#cv-action').value;
+    const target=['abrir','encaminhar','reabrir'].includes(mode);
+    const response=mode==='responder';
+    $('#cv-target').classList.toggle('cv-hidden',!target);
+    $('#cv-type-wrap').classList.toggle('cv-hidden',mode!=='abrir');
+    $('#cv-response-wrap').classList.toggle('cv-hidden',!response);
+    $('#cv-buyer-wrap').classList.toggle('cv-hidden',!target || $('#cv-sector').value!=='comercial');
+    $('#cv-sector').disabled=false;
+    if (target) {
+      if(d && !$('#cv-sector').value) $('#cv-sector').value=d.setorAtual||d.setor||'';
+      renderTypes(); renderBuyers();
+    }
+    if (response) renderResponses();
+    $('#cv-hint').textContent = response ? 'Qualquer resposta ativa deste setor encerra a passagem e para o relógio. “Informações divergentes” atribui esse período ao retrabalho por erro da CRF. Não encerra automaticamente a divergência.' :
+      target ? 'Ao salvar será iniciada uma nova passagem. A classificação original da divergência não muda. O Comercial não modifica o status do Infradesk.' :
+      mode==='observacao' ? 'Esta observação não muda a situação nem inicia/encerra relógio.' :
+      'Esta ação é da CRF e somente fica disponível sem passagem ativa.';
+    $('#cv-text').placeholder = response ? 'Detalhes do retorno (opcional se uma resposta foi selecionada)' : 'Informe detalhes do encaminhamento ou ocorrência...';
+  }
+  function renderTypes() {
+    const select=$('#cv-type');
+    const existing=select.value, sector=$('#cv-sector').value;
+    select.replaceChildren(new Option('Selecione o tipo',''));
+    state.catalog.types.filter(x=>x.ativo!==false && x.setor===sector)
+      .sort((a,b)=>trim(a.nome).localeCompare(trim(b.nome),'pt-BR'))
+      .forEach(t=>select.add(new Option(t.nome,t.id)));
+    if ([...select.options].some(x=>x.value===existing)) select.value=existing;
+  }
+  function renderBuyers() {
+    const sector=$('#cv-sector').value;
+    $('#cv-buyer-wrap').classList.toggle('cv-hidden',sector!=='comercial' || !['abrir','encaminhar','reabrir'].includes(state.mode));
+    const select=$('#cv-buyer');
+    const current=select.value, buyers=activeBuyers();
+    select.replaceChildren(new Option(buyers.length ? 'Selecione o comprador' : 'Nenhum comprador ativo vinculado',''));
+    buyers.forEach(b=>select.add(new Option(b.nome,b.id)));
+    const remembered=state.selected?.compradorAtualId || state.selected?.compradorId || '';
+    if (buyers.some(b=>b.id===current)) select.value=current;
+    else if (state.selected && buyers.some(b=>b.id===remembered)) select.value=remembered;
+    else if (buyers.length===1) select.value=buyers[0].id;
+    // Nova divergência com 2+ compradores: seleção em branco, obrigatória.
+  }
+  function renderResponses() {
+    const sector=state.selected?.setorAtual || state.selected?.setor;
+    const select=$('#cv-response');
+    select.replaceChildren(new Option('Selecione a resposta do setor',''));
+    state.catalog.responses.filter(r=>r.ativo!==false && r.setor===sector)
+      .sort((a,b)=>trim(a.nome).localeCompare(trim(b.nome),'pt-BR'))
+      .forEach(r=>select.add(new Option(r.nome,r.id)));
+  }
+  async function save() {
+    if (state.busy || !canRecord() || !state.data) return;
+    const action=state.mode, old=state.selected, data=state.data;
+    const sector=$('#cv-sector').value, typeId=$('#cv-type').value;
+    const buyerId=$('#cv-buyer').value, responseId=$('#cv-response').value;
+    let details=trim($('#cv-text').value);
+    const forwarding=['abrir','encaminhar','reabrir'].includes(action);
+    const type=state.catalog.types.find(x=>x.id===typeId);
+    const buyer=state.buyers.get(buyerId)?.value || null;
+    const response=state.catalog.responses.find(x=>x.id===responseId);
+
+    if (!old && action!=='abrir') return alertUser('Escolha uma divergência.',true);
+    if (action==='abrir' && (!type || type.ativo===false || type.setor!==sector)) return alertUser('Escolha um tipo de divergência ativo deste setor.',true);
+    if (forwarding && !sectors[sector]) return alertUser('Escolha o setor responsável.',true);
+    if (forwarding && sector==='comercial' && (!buyer || buyer.ativo===false || !(state.supplier?.compradorIds||[]).includes(buyerId))) return alertUser('Selecione um comprador ativo vinculado ao CNPJ.',true);
+    if (action==='responder' && (!response || response.ativo===false || response.setor !== (old?.setorAtual||old?.setor))) return alertUser('Escolha uma resposta ativa do setor que recebeu a nota.',true);
+    if (action==='responder' && !details) details=`Resposta recebida: ${response.nome}`;
+    if (!details) return alertUser('Informe uma observação antes de salvar.',true);
+
+    state.busy=true; $('#cv-save').disabled=true; $('#cv-save').textContent='Gravando...';
+    const noteRef=db.collection('notas_v2').doc(data.chave);
+    const divRef=old?db.collection('divergencias_v2').doc(old.id):db.collection('divergencias_v2').doc();
+    const eventRef=db.collection('eventos_v2').doc();
+    const nextPassRef=forwarding?db.collection('passagens_v2').doc():null;
+    const currentPassRef=old?.passagemAbertaId?db.collection('passagens_v2').doc(old.passagemAbertaId):null;
+    const attribution=action==='responder' && erroCrf(response)?'crf_erro':(old?.setorAtual||old?.setor||sector);
+    try {
+      await db.runTransaction(async tx=>{
+        // Leituras da transação SEMPRE antes de qualquer gravação.
+        const nSnap=await tx.get(noteRef);
+        const dSnap=old?await tx.get(divRef):null;
+        const pSnap=currentPassRef?await tx.get(currentPassRef):null;
+        let supplierSnap=null;
+        const supplierRef=db.collection('fornecedores_v2').doc(data.cnpj);
+        if (!state.supplier) supplierSnap=await tx.get(supplierRef);
+
+        const prior=dSnap?.data()||null;
+        if (old && !dSnap.exists) throw Error('Divergência não encontrada. Reabra a nota.');
+        if (old && (Number(prior.revisao||0)!==Number(old.revisao||0) || String(prior.passagemAbertaId||'')!==String(old.passagemAbertaId||''))) throw Error('Outro operador já movimentou esta divergência. Reabra a nota para atualizar.');
+        if (action==='responder' && (!prior?.passagemAbertaId || !pSnap?.exists || pSnap.data().fimEm)) throw Error('Esta passagem já foi encerrada. Atualize a nota.');
+        if (action==='observacao' && !old) throw Error('Escolha uma divergência.');
+        if (forwarding && prior?.passagemAbertaId) throw Error('Já existe uma passagem aguardando resposta. Registre o retorno primeiro.');
+        if (['concluir','devolver'].includes(action) && prior?.passagemAbertaId) throw Error('Registre a resposta do setor antes de concluir.');
+        if (['concluir','devolver','encaminhar'].includes(action) && !['em_crf'].includes(prior?.status)) throw Error('Esta divergência não está aguardando a CRF. Atualize a nota.');
+        if (action==='reabrir' && !['concluida','devolucao'].includes(prior?.status)) throw Error('A divergência ainda não foi encerrada.');
+        if (action==='abrir' && prior) throw Error('Esta divergência já existe.');
+        const now=FV.serverTimestamp();
+        const opName=trim(state.profile?.nome||state.user.displayName||state.user.email);
+        const supplierName=state.supplier?.razaoSocial || supplierSnap?.data()?.razaoSocial || data.fornecedorNome;
+        if (!state.supplier && !supplierSnap?.exists) tx.set(supplierRef,{
+          cnpj:data.cnpj,razaoSocial:data.fornecedorNome,nomeInfradesk:data.fornecedorNome,
+          origemRazaoSocial:'infradesk',compradorIds:[],ativo:true,criadoEm:now,atualizadoEm:now
+        });
+        const noteData={
+          chave:data.chave,cnpj:data.cnpj,numeroNf:data.numeroNf,serie:data.serie,
+          fornecedorNome:supplierName,nomeInfradesk:data.fornecedorNome,
+          ultimaAcao:action,ultimaOcorrenciaTexto:details,atualizadoEm:now,versao:2
+        };
+        if (data.chamadoInfradeskId) noteData.chamadosInfradeskIds=FV.arrayUnion(data.chamadoInfradeskId);
+        if(!nSnap.exists) tx.set(noteRef,{...noteData,criadoEm:now,divergenciasCount:action==='abrir'?1:0});
+        else tx.update(noteRef,{...noteData,...(action==='abrir'?{divergenciasCount:FV.increment(1)}:{})});
+
+        const nextStatus=forwarding?'aberta':action==='responder'?'em_crf':action==='concluir'?'concluida':action==='devolver'?'devolucao':prior.status;
+        const buyerName=sector==='comercial'?(buyer?.nome||''):'';
+        if (!prior) tx.set(divRef,{
+          chave:data.chave,cnpj:data.cnpj,numeroNf:data.numeroNf,fornecedorNome:supplierName,
+          criadoEm:now,atualizadoEm:now,abertoPor:state.user.uid,abertoPorNome:opName,
+          setor:sector,tipoId,typeId,tipoNome:type.nome,
+          compradorId:buyerId,compradorNome:buyerName,
+          setorAtual:sector,compradorAtualId:buyerId,compradorAtualNome:buyerName,
+          status:'aberta',passagemAbertaId:nextPassRef.id,passagensCount:1,revisao:1,
+          ultimaOcorrenciaTexto:details,ultimaOcorrenciaEm:now
+        });
+        else {
+          const changes={atualizadoEm:now,ultimaOcorrenciaTexto:details,ultimaOcorrenciaEm:now,status:nextStatus,revisao:FV.increment(1)};
+          if (forwarding) Object.assign(changes,{
+            passagemAbertaId:nextPassRef.id,passagensCount:FV.increment(1),
+            setorAtual:sector,compradorAtualId:sector==='comercial'?buyerId:'',compradorAtualNome:buyerName,
+            ...(action==='reabrir'?{resolvidoEm:null}:{})
+          });
+          if (action==='responder') Object.assign(changes,{passagemAbertaId:null,ultimaRespostaId:response.id,ultimaRespostaNome:response.nome});
+          if (['concluir','devolver'].includes(action)) Object.assign(changes,{passagemAbertaId:null,resolvidoEm:now});
+          tx.update(divRef,changes);
+        }
+        if (nextPassRef) tx.set(nextPassRef,{
+          chave:data.chave,divergenciaId:divRef.id,setor:sector,
+          compradorId:sector==='comercial'?buyerId:'',compradorNome:buyerName,
+          inicioEm:now,fimEm:null,criadoPor:state.user.uid,criadoPorNome:opName,
+          chamadoInfradeskId:data.chamadoInfradeskId||''
+        });
+        if (action==='responder') tx.update(currentPassRef,{
+          fimEm:now,fechadoPor:state.user.uid,fechamento:'resposta',
+          respostaId:response.id,respostaNome:response.nome,atribuicaoTempo:attribution
+        });
+        tx.set(eventRef,{
+          chave:data.chave,divergenciaId:divRef.id,acao:action,
+          setor:action==='responder'?(prior?.setorAtual||prior?.setor):forwarding?sector:(prior?.setorAtual||prior?.setor),
+          compradorId:forwarding?buyerId:(prior?.compradorAtualId||prior?.compradorId||''),
+          compradorNome:forwarding?buyerName:(prior?.compradorAtualNome||prior?.compradorNome||''),
+          respostaId:action==='responder'?response.id:'',respostaNome:action==='responder'?response.nome:'',
+          atribuicaoTempo:action==='responder'?attribution:'',
+          passagemId:action==='responder'?(prior?.passagemAbertaId||''):(nextPassRef?.id||''),
+          texto:details,chamadoInfradeskId:data.chamadoInfradeskId||'',
+          usuarioId:state.user.uid,usuarioNome:opName,usuarioEmail:state.user.email||'',criadoEm:now
+        });
+      });
+      alertUser(action==='responder'?'Resposta registrada e relógio encerrado.':action==='abrir'?'Divergência aberta e encaminhada.':'Evento gravado com sucesso.');
+      close();
+    } catch(e) {
+      console.error('[Comercial V2.3] Erro ao salvar:',e);
+      alertUser(e?.code==='permission-denied'?'Acesso negado. Publique as novas regras do Firestore antes do teste.':(e.message||'Falha ao salvar'),true);
+    } finally {state.busy=false;$('#cv-save').disabled=!canRecord();$('#cv-save').textContent='Salvar ocorrência';}
+  }
+  function addButton(card) {
+    if ($('.comercial-v2-button',card)) return;
+    if (!extract(card)) return; // Sem Firebase. Apenas lê o HTML do Infradesk.
+    const toolbar=$('.toolbar-atendente',card)||$('.list-toolbar',card)||card;
+    const button=document.createElement('button');
+    button.type='button';button.className='comercial-v2-button';button.title='Registrar divergências e respostas no Comercial';
+    const icon=document.createElement('img');icon.src=ICON;icon.alt='Comercial';button.append(icon);
+    button.onclick=e=>{e.preventDefault();e.stopPropagation();openCard(card);};
+    const xabuia=$('.xabuia-card-btn',toolbar);
+    if(xabuia)xabuia.insertAdjacentElement('afterend',button);else toolbar.append(button);
+  }
+  function scan() { $$('.chamado-item[data-chamado-id]').forEach(addButton); }
+  let timer=null;
+  const observer=new MutationObserver(()=>{clearTimeout(timer);timer=setTimeout(scan,400);});
+  auth.onAuthStateChanged(user=>{
+    if (!user || state.user?.uid!==user.uid) {
+      state.user=user;state.profile=null;state.profileAt=0;
+      state.catalog.expiresAt=0;state.buyers.clear();
+    }
+  });
+  function boot() {
+    createUI();scan();observer.observe(document.body,{childList:true,subtree:true});
+    console.info('[Comercial V2.3] Pronto. Nenhuma consulta automática de Firestore por card.');
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
