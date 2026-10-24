@@ -1,4 +1,4 @@
-// Comercial V2.4.0 — cálculos puros: sem Firebase, sem listeners.
+// Comercial V2.4.1 — cálculos puros: sem Firebase, sem listeners.
 export const ms = value => {
   if (!value) return 0;
   if (typeof value.toMillis === 'function') return value.toMillis();
@@ -48,7 +48,10 @@ export function noteTimes(divergencias, passagens, now=Date.now()) {
   };
 }
 export function effectiveStatus(d) {
-  return d && (d.status==='respondida'||(d.status==='em_crf'&&!d.passagemAbertaId&&(d.ultimaRespostaId||d.ultimaRespostaNome)))?'respondida':d?.status||'';
+  if (!d) return '';
+  if (d.passagemAbertaId) return 'aberta';
+  return ['respondida','concluida','devolucao'].includes(d.status) ||
+    (d.status === 'em_crf' && (d.ultimaRespostaId || d.ultimaRespostaNome)) ? 'respondida' : 'aberta';
 }
 export function countGroups(rows, getName, getNote = row => row.chave) {
   const map = new Map();

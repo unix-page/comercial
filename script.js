@@ -1,4 +1,4 @@
-// Comercial V2.4.0 — painel por NF, histórico completo e relatórios sob demanda.
+// Comercial V2.4.1 — painel por NF, histórico completo e relatórios sob demanda.
 // Nenhuma consulta em tempo real. Carregue páginas adicionais apenas quando necessário.
 import {db,SECTORS,escapeHtml,canon,fmtDate,fmtDuration,millis,initAuthUI,isAdmin,
   doc,collection,getDoc,getDocs,query,where,orderBy,limit,startAfter} from './firebase-core.js';
@@ -6,7 +6,7 @@ import {ms, elapsed, noteTimes, effectiveStatus, countGroups, buyerTimeGroups} f
 const $=s=>document.querySelector(s);
 const BATCH=120, HISTORY_LIMIT=250, REPORT_GROUP=10, REPORT_GROUP_LIMIT=250;
 const state={user:null,profile:null,docs:[],cursor:null,exhausted:false,fetching:false,openKey:'',reportBusy:false,historyBusy:false,deepOpened:false};
-const labels={aberta:'Aberta',em_crf:'Aguardando CRF',respondida:'Respondida',concluida:'Concluída',devolucao:'Devolver / recusar'};
+const labels={aberta:'Aberta',respondida:'Respondida'};
 const dt=(t)=>fmtDate(t);
 const cat=d=>String(d?.categoriaNota||d?.categoriaFornecedor||d?.tipoNota||'Categoria não registrada');
 const labelSector=k=>SECTORS[k]||k||'—';
@@ -42,9 +42,8 @@ function renderTable(){
   const rows=visibleRows(),notes=new Set(rows.map(d=>d.chave));
   $('#metricNotas').textContent=notes.size;
   $('#metricDivergencias').textContent=rows.length;
-  $('#metricPendentes').textContent=rows.filter(d=>['aberta','em_crf'].includes(effectiveStatus(d))).length;
-  $('#metricConcluidas').textContent=rows.filter(d=>['respondida','concluida'].includes(effectiveStatus(d))).length;
-  $('#metricDevolucoes').textContent=rows.filter(d=>effectiveStatus(d)==='devolucao').length;
+  $('#metricPendentes').textContent=rows.filter(d=>effectiveStatus(d)==='aberta').length;
+  $('#metricConcluidas').textContent=rows.filter(d=>effectiveStatus(d)==='respondida').length;
   $('#dataInfo').textContent=`${rows.length} divergências filtradas • ${state.docs.length} carregadas • ${notes.size} notas distintas • sem monitoramento automático${state.exhausted?' • fim da consulta':' • mais registros podem existir'}`;
   $('#loadMore').disabled=state.fetching||state.exhausted;
   $('#loadMore').textContent=state.exhausted?'Todas as páginas consultadas':'Carregar mais 120';
