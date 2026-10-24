@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.3.4
+// @name         Comercial • Infradesk • Registro de divergências V2.4.0
 // @namespace    comercial/infradesk
 // @version      2.3.4
 // @description  Uma NF por chave; divergências independentes; cada resposta encerra uma passagem. Sem consultas automáticas por card.
@@ -14,11 +14,11 @@
   'use strict';
   if (window.__COMERCIAL_APP_RUNNING__) return;
   if (!window.firebase?.auth || !window.firebase?.firestore) {
-    console.error('[Comercial V2.3.4] Firebase compat não encontrado. Confira o loader.');
+    console.error('[Comercial V2.4.0] Firebase compat não encontrado. Confira o loader.');
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.3.4';
+  window.__COMERCIAL_APP_VERSION__ = '2.4.0';
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
   const CONFIG = {
@@ -177,6 +177,10 @@
     const info = cardStatusInfo(summary);
     card.dataset.comercialStatus = info.key;
     const when = timeString(summary.atualizadoEm);
+    const fingerprint = [info.key, info.label, summary.tipoNome, summary.ultimaOcorrenciaTexto, when, summary.footer].join('|');
+    // Evita reescrever o DOM em cada MutationObserver (loop de renderização).
+    if (box.dataset.fingerprint === fingerprint) return;
+    box.dataset.fingerprint = fingerprint;
     box.className = `comercial-box comercial-status-${String(info.key).replace(/[^a-z0-9_-]/gi,'_')}`;
     box.innerHTML = `
       <div class="comercial-box-head"><span class="comercial-box-title"><img src="${ICON}" alt=""> Comercial</span><span class="comercial-chip">${escape(info.label)}</span></div>
@@ -195,33 +199,33 @@
     return Boolean(entry.summary);
   }
   async function refreshVisibleCards(force = false) {
-    if (state.visibleLookupBusy) return;
-    if (!auth.currentUser || !canRecord()) return;
-    if (!force && Date.now() - state.visibleLookupAt < 120000) return;
-    const keys = [...new Set($$('.chamado-item[data-chamado-id]').map(extract).filter(Boolean).map(x => x.chave).filter(Boolean))];
+    if (state.visibleLookupBusy || !auth.currentUser || !canRecord()) return;
+    // Apenas cards na tela, não todo o Kanban. Consulta no máximo 20 chaves sem cache.
+    const cards = $$('.chamado-item[data-chamado-id]').filter(card => {
+      const rect = card.getBoundingClientRect();
+      return rect.bottom >= -350 && rect.top <= window.innerHeight + 350;
+    });
+    const keys = [...new Set(cards.map(extract).filter(Boolean).map(x => x.chave).filter(Boolean))]
+      .filter(chave => force || !cardCacheEntry(chave)).slice(0, 20);
     if (!keys.length) return;
-    const chunks = [];
-    for (let i = 0; i < keys.length; i += 10) chunks.push(keys.slice(i, i + 10));
     state.visibleLookupBusy = true;
     try {
-      for (const chunk of chunks) {
+      for (let i=0;i<keys.length;i+=10) {
+        const chunk = keys.slice(i,i+10);
         const snap = await db.collection('divergencias_v2').where('chave', 'in', chunk).get();
         const grouped = new Map();
         snap.docs.forEach(doc => {
-          const row = { id: doc.id, ...doc.data() };
+          const row = { id:doc.id, ...doc.data() };
           const list = grouped.get(row.chave) || [];
           list.push(row);
-          grouped.set(row.chave, list);
+          grouped.set(row.chave,list);
         });
-        chunk.forEach(chave => rememberCardSummary(chave, summarizeDivergences(grouped.get(chave) || [], chave)));
+        chunk.forEach(chave => rememberCardSummary(chave,summarizeDivergences(grouped.get(chave)||[],chave)));
       }
-      state.visibleLookupAt = Date.now();
-      $$('.chamado-item[data-chamado-id]').forEach(renderCardFromCache);
-    } catch (e) {
-      console.warn('[Comercial V2.3.4] Não consegui atualizar os cards visíveis:', e);
-    } finally {
-      state.visibleLookupBusy = false;
-    }
+      cards.forEach(renderCardFromCache);
+    } catch(e) {
+      console.warn('[Comercial V2.4.0] Atualização de cards visíveis falhou:',e);
+    } finally { state.visibleLookupBusy = false; }
   }
 
   function parseKey(v) {
@@ -248,13 +252,15 @@
       fornecedorId: supplierLink?.getAttribute('href')?.match(/\/fornecedores\/contato\/(\d+)/i)?.[1] || '',
       // Mesmo seletor do Xabuia. A empresa é a loja/unidade mostrada no card.
       empresa: trim($('.item-data-empresa', card)?.textContent || ''),
+      // Categoria ORIGINAL do card (não confundir com setor da divergência).
+      categoriaNota: trim($('.item-subcategoria', card)?.getAttribute('title') || $('.item-subcategoria', card)?.textContent || ''),
       statusInfradesk: trim(card.closest('ul[data-status-descricao]')?.getAttribute('data-status-descricao') || ''),
       descricaoInfradesk: trim($('.item-ultima-descricao-copy',card)?.textContent || '')
     };
   }
   function timeString(ts) {
     if (!ts) return '—';
-    const dt = ts.toDate?.() || new Date(ts);
+    const dt = ts.toDate?.() || (typeof ts.seconds === 'number' ? new Date(ts.seconds * 1000 + Math.floor((ts.nanoseconds || 0) / 1e6)) : new Date(ts));
     return isNaN(dt.getTime()) ? '—' : dt.toLocaleString('pt-BR');
   }
   function alertUser(text, isError = false) {
@@ -351,6 +357,7 @@
       <div class="cv-header"><img src="${ICON}" alt=""><div><strong>Abrir Comercial</strong><small>NF • Divergência Comercial</small></div><button class="cv-button" id="cv-close" type="button">✕</button></div>
       <div class="cv-content">
         <div class="cv-info" id="cv-info"></div>
+        <a id="cv-history-link" class="cv-button" style="text-align:center;display:block;text-decoration:none" target="_blank" rel="noopener noreferrer" href="https://unix-page.github.io/comercial/">Ver linha do tempo completa desta NF ↗</a>
         <div class="cv-session"><div id="cv-session-text">Verificando login do Comercial...</div><button type="button" class="cv-button cv-hidden" id="cv-logout">Sair / trocar conta</button></div>
         <div id="cv-login-entry" class="cv-login-entry cv-hidden"><button type="button" id="cv-login-toggle" class="cv-button primary">Entrar no Comercial</button><span>Login independente do Infradesk e do Xabuia.</span></div>
         <div id="cv-login" class="cv-login cv-hidden">
@@ -535,8 +542,10 @@
       <div><b>NF:</b> ${escape(data.numeroNf)} • <b>CNPJ:</b> ${escape(data.cnpj)}</div>
       <div><b>Infradesk:</b> ${escape(data.chamadoInfradeskId||'—')} • ${escape(data.statusInfradesk||'—')}</div>
       <div><b>Empresa:</b> ${escape(data.empresa||'—')}</div>
+      <div><b>Categoria da nota:</b> ${escape(data.categoriaNota||'—')}</div>
       <div><b>Fornecedor:</b> ${escape(data.fornecedorTexto||data.fornecedorNome||'—')}</div>`;
     $('#cv-text').value = '';
+    $('#cv-history-link').href = 'https://unix-page.github.io/comercial/?nf=' + encodeURIComponent(data.chave);
     $('#comercial-v2-modal').classList.add('open');
     $('#cv-form').classList.add('cv-hidden');
     $('#cv-save').disabled = true;
@@ -785,6 +794,7 @@
           fornecedorNome:supplierName,nomeInfradesk:data.fornecedorNome,
           fornecedorTexto:data.fornecedorTexto||data.fornecedorNome,
           empresa:data.empresa||'',statusInfradesk:data.statusInfradesk||'',
+          ...(data.categoriaNota?{categoriaNota:data.categoriaNota,categoriaFornecedor:data.categoriaNota,tipoNota:data.categoriaNota}:{}),
           ultimaAcao:action,ultimaOcorrenciaTexto:details,atualizadoEm:now,versao:2
         };
         if (data.chamadoInfradeskId) noteData.chamadosInfradeskIds=FV.arrayUnion(data.chamadoInfradeskId);
@@ -802,6 +812,7 @@
           chave:data.chave,cnpj:data.cnpj,numeroNf:data.numeroNf,fornecedorNome:supplierName,
           criadoEm:now,atualizadoEm:now,abertoPor:state.user.uid,abertoPorNome:opName,
           setor:sector,tipoId:typeId,tipoNome:type.nome,
+          categoriaNota:data.categoriaNota||'',
           compradorId:buyerId,compradorNome:buyerName,
           setorAtual:sector,compradorAtualId:buyerId,compradorAtualNome:buyerName,
           status:'aberta',passagemAbertaId:nextPassRef.id,passagensCount:1,revisao:1,
@@ -814,6 +825,7 @@
             setorAtual:sector,compradorAtualId:sector==='comercial'?buyerId:'',compradorAtualNome:buyerName,
             ...(action==='reabrir'?{resolvidoEm:null}:{})
           });
+          if (data.categoriaNota && !prior.categoriaNota) changes.categoriaNota=data.categoriaNota;
           if (action==='responder') Object.assign(changes,{passagemAbertaId:null,ultimaRespostaId:response.id,ultimaRespostaNome:response.nome,encerradoEm:now});
           if (['concluir','devolver'].includes(action)) Object.assign(changes,{passagemAbertaId:null,resolvidoEm:now});
           tx.update(divRef,changes);
@@ -837,7 +849,7 @@
           atribuicaoTempo:action==='responder'?attribution:'',
           passagemId:action==='responder'?(prior?.passagemAbertaId||''):(nextPassRef?.id||''),
           texto:details,chamadoInfradeskId:data.chamadoInfradeskId||'',
-          empresa:data.empresa||'',
+          empresa:data.empresa||'',categoriaNota:data.categoriaNota||nSnap.data()?.categoriaNota||'',
           usuarioId:state.user.uid,usuarioNome:opName,usuarioEmail:state.user.email||'',criadoEm:now
         });
       });
@@ -868,16 +880,20 @@
   function scan() { $$('.chamado-item[data-chamado-id]').forEach(card => { addButton(card); renderCardFromCache(card); }); }
   let timer=null;
   const observer=new MutationObserver(()=>{clearTimeout(timer);timer=setTimeout(()=>{scan();refreshVisibleCards(false);},500);});
-  auth.onAuthStateChanged(user=>{
+  window.addEventListener('scroll',()=>{clearTimeout(timer);timer=setTimeout(()=>{scan();refreshVisibleCards(false);},450);},{passive:true});
+  auth.onAuthStateChanged(async user=>{
     if (!user || state.user?.uid!==user.uid) {
       state.user=user;state.profile=null;state.profileAt=0;
       state.catalog.expiresAt=0;state.buyers.clear();
     }
+    // Uma leitura do próprio perfil quando o usuário entra; sem monitoramento constante.
+    try { if(user) await loadProfile(); } catch(e) { console.warn('[Comercial] Perfil não carregado:',e); }
     renderSession();
+    if (user && state.profile) void refreshVisibleCards(false);
   });
   function boot() {
     createUI();scan();observer.observe(document.body,{childList:true,subtree:true});
-    console.info('[Comercial V2.3.4] Pronto. Cards consultam apenas chaves visíveis, sem listeners em tempo real.');
+    console.info('[Comercial V2.4.0] Pronto. Cards consultam apenas chaves visíveis, sem listeners em tempo real.');
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
