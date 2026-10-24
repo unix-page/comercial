@@ -12,10 +12,48 @@ service cloud.firestore {
     function validKey(k) { return k.matches('^[0-9]{44}$'); }
     function validCnpj(c) { return c.matches('^[0-9]{14}$'); }
 
-    // NÃO recriar usuários via seed ou script: manter os documentos existentes.
+    // Autocadastro permitido SOMENTE do próprio perfil, normal e ativo.
+    // E-mail deve estar verificado. Não se pode autoatribuir admin ou outros papéis.
+    function selfRegistration(uid) {
+      return signed()
+        && request.auth.uid == uid
+        && request.auth.token.email_verified == true
+        && request.auth.token.email is string
+        && request.resource.data.keys().hasOnly([
+          'nome', 'email', 'papel', 'ativo', 'origem', 'criadoEm'
+        ])
+        && request.resource.data.keys().hasAll([
+          'nome', 'email', 'papel', 'ativo', 'origem', 'criadoEm'
+        ])
+        && request.resource.data.nome is string
+        && request.resource.data.nome.size() >= 2
+        && request.resource.data.nome.size() <= 120
+        && request.resource.data.email == request.auth.token.email.lower()
+        && request.resource.data.papel == 'usuario'
+        && request.resource.data.ativo == true
+        && request.resource.data.origem == 'autocadastro'
+        && request.resource.data.criadoEm == request.time;
+    }
+    // Usuário existente só pode alterar seu nome de exibição e data da edição.
+    // Não pode modificar papel, ativo, email, origem ou quaisquer permissões.
+    function selfNameUpdate(uid) {
+      return signed()
+        && request.auth.uid == uid
+        && request.auth.token.email_verified == true
+        && resource.data.get('ativo', true) == true
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'nome', 'atualizadoEm'
+        ])
+        && request.resource.data.nome is string
+        && request.resource.data.nome.size() >= 2
+        && request.resource.data.nome.size() <= 120
+        && request.resource.data.atualizadoEm == request.time;
+    }
     match /usuarios/{uid} {
       allow get: if signed() && (request.auth.uid == uid || admin());
-      allow list, create, update, delete: if admin();
+      allow list, delete: if admin();
+      allow update: if admin() || selfNameUpdate(uid);
+      allow create: if admin() || selfRegistration(uid);
     }
     match /compradores_v2/{id} {
       allow read: if active();
@@ -24,13 +62,34 @@ service cloud.firestore {
     }
     match /fornecedores_v2/{cnpj} {
       allow read: if active();
+      // Operadores CRF podem vincular compradores e corrigir a razão social
+      // para o CNPJ atual. Não podem alterar status, CNPJ ou campos fiscais.
       allow create: if admin() || (
         crf() && validCnpj(cnpj) && request.resource.data.cnpj == cnpj &&
-        request.resource.data.origemRazaoSocial == 'infradesk' &&
-        request.resource.data.compradorIds is list && request.resource.data.compradorIds.size() == 0 &&
-        request.resource.data.ativo == true
+        request.resource.data.razaoSocial is string && request.resource.data.razaoSocial.size() >= 3 &&
+        request.resource.data.razaoSocial.size() <= 200 &&
+        request.resource.data.origemRazaoSocial in ['infradesk', 'manual'] &&
+        request.resource.data.compradorIds is list && request.resource.data.compradorIds.size() <= 60 &&
+        request.resource.data.ativo == true &&
+        request.resource.data.atualizadoPor == request.auth.uid &&
+        request.resource.data.keys().hasOnly(['cnpj','razaoSocial','nomeInfradesk',
+          'origemRazaoSocial','compradorIds','ativo','criadoEm','atualizadoEm','atualizadoPor'])
       );
-      allow update: if admin();
+      allow update: if admin() || (
+        crf() && validCnpj(cnpj) && resource.data.cnpj == cnpj &&
+        request.resource.data.cnpj == cnpj &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'razaoSocial','compradorIds','origemRazaoSocial','atualizadoEm','atualizadoPor'
+        ]) &&
+        request.resource.data.razaoSocial is string &&
+        request.resource.data.razaoSocial.size() >= 3 &&
+        request.resource.data.razaoSocial.size() <= 200 &&
+        request.resource.data.compradorIds is list &&
+        request.resource.data.compradorIds.size() <= 60 &&
+        request.resource.data.origemRazaoSocial in ['infradesk', 'manual', 'importacao_json'] &&
+        request.resource.data.atualizadoPor == request.auth.uid &&
+        request.resource.data.atualizadoEm is timestamp
+      );
       allow delete: if false;
     }
     match /tipos_divergencia_v2/{id} {

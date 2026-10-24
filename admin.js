@@ -85,7 +85,14 @@ try{
  await refreshSuppliers();toast(`Importação concluída: ${suppliersWritten} fornecedor(es), ${buyersWritten} comprador(es) novo(s).`);$('#runImport').disabled=true;state.importRows=[];
  }catch(e){error(new Error(`Importação interrompida após ${suppliersWritten} fornecedor(es) e ${buyersWritten} comprador(es) preparados. Pode repetir sem duplicar. ${e.message||e}`));}finally{busy(false);}}
 function switchTab(tab){document.querySelectorAll('[data-tab]').forEach(el=>el.classList.toggle('active',el.dataset.tab===tab));document.querySelectorAll('.tab-panel').forEach(el=>el.classList.add('hidden'));$('#tab-'+tab)?.classList.remove('hidden');}
-$('#adminTabs').addEventListener('click',e=>{const t=e.target.closest('[data-tab]');if(t)switchTab(t.dataset.tab);});
+$('#adminTabs').addEventListener('click',e=>{
+  const t=e.target.closest('[data-tab]');
+  if (!t) return;
+  switchTab(t.dataset.tab);
+  if (t.dataset.tab === 'usuarios' && isAdmin(state.profile)) {
+    refreshUsers().catch(error);
+  }
+});
 $('#buyerForm').addEventListener('submit',addBuyer);$('#supplierForm').addEventListener('submit',addSupplier);$('#typeForm').addEventListener('submit',ev=>addCatalog(ev,'types'));$('#responseForm').addEventListener('submit',ev=>addCatalog(ev,'responses'));$('#catalogEditForm').addEventListener('submit',saveCatalogEdit);
 $('#seedBuyers').addEventListener('click',seedBuyers);$('#seedTypes').addEventListener('click',()=>seedCatalog('types',DIVERGENCE_SEED));$('#seedResponses').addEventListener('click',()=>seedCatalog('responses',RESPONSE_SEED));$('#refreshSuppliers').addEventListener('click',()=>refreshSuppliers().catch(error));$('#supplierSearch').addEventListener('input',renderSuppliers);$('#previewImport').addEventListener('click',previewImport);$('#runImport').addEventListener('click',runImport);
 $('#buyersBody').addEventListener('click',e=>{const id=e.target.closest('[data-buyer-toggle]')?.dataset.buyerToggle;if(id)toggleBuyer(id);});
@@ -96,6 +103,7 @@ for(const [kind,prefix] of [['types','type'],['responses','response']]){for(cons
 $('#catalogEditClose').addEventListener('click',closeCatalogEditor);$('#catalogEditCancel').addEventListener('click',closeCatalogEditor);
 $('#catalogEditOverlay').addEventListener('click',e=>{if(e.target.id==='catalogEditOverlay')closeCatalogEditor();});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('#catalogEditOverlay').classList.contains('hidden'))closeCatalogEditor();});
+$('#refreshUsers').addEventListener('click', ()=>refreshUsers().catch(error));
 $('#usersBody').addEventListener('click',e=>{const id=e.target.closest('[data-user-save]')?.dataset.userSave;if(id)saveUser(id);});
 initAuthUI({onError:error,onUser:async(u,p)=>{
 state.user=u;state.profile=p;const ok=isAdmin(p);$('#adminDenied').classList.toggle('hidden',ok);$('#adminContent').classList.toggle('hidden',!ok);if(!u||!p)return;

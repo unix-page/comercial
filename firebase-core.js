@@ -1,7 +1,7 @@
 // Comercial V2 • configuração compartilhada do portal GitHub Pages.
 // Chaves de configuração web do Firebase são públicas; permissões pertencem às regras Firestore.
 import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword, signOut, sendPasswordResetEmail, onAuthStateChanged, EmailAuthProvider, linkWithCredential } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, sendEmailVerification, reload, signOut, sendPasswordResetEmail, onAuthStateChanged, EmailAuthProvider, linkWithCredential } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js';
 import { getFirestore, doc, collection, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc, query, where, orderBy, limit, startAfter, serverTimestamp, writeBatch, runTransaction, arrayUnion, increment, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
 export { doc, collection, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc, query, where, orderBy, limit, startAfter, serverTimestamp, writeBatch, runTransaction, arrayUnion, increment, onSnapshot, onAuthStateChanged };
 const config = {
@@ -70,22 +70,163 @@ export async function addPassword(password){if(!auth.currentUser?.email)throw ne
 export function activeProfile(p){return !!p && p.ativo !== false;}
 export function isAdmin(p){return activeProfile(p)&&p.papel==='admin';}
 export function canRecord(p){return activeProfile(p)&&['admin','usuario','crf'].includes(p.papel);}
-export async function profileFor(user){if(!user)return null;const s=await getDoc(doc(db,'usuarios',user.uid));return s.exists()?{id:s.id,...s.data()}:null;}
-export function initAuthUI({onUser, onError=console.error}){
-  let lastUid;
-  const view=document.getElementById('authScreen'),body=document.getElementById('mainScreen'),status=document.getElementById('authStatus');
-  const form=document.getElementById('loginForm');
-  form?.addEventListener('submit',async ev=>{ev.preventDefault();try{const fd=new FormData(form);await loginEmail(plain(fd.get('email')),String(fd.get('password')||''));}catch(e){onError(e);}});
-  document.getElementById('googleLogin')?.addEventListener('click',async()=>{try{await loginGoogle();}catch(e){onError(e);}});
-  document.getElementById('resetLogin')?.addEventListener('click',async()=>{const email=plain(form?.querySelector('[name=email]')?.value);if(!email){onError(new Error('Digite seu e-mail primeiro.'));return;}try{await resetPassword(email);alert('Se a conta permitir recuperação, você receberá as instruções por e-mail.');}catch(e){onError(e);}});
-  document.getElementById('logoutButton')?.addEventListener('click',()=>logout().catch(onError));
-  document.getElementById('signOutLogin')?.addEventListener('click',()=>logout().catch(onError));
-  document.getElementById('setPassword')?.addEventListener('click',async()=>{const p=prompt('Defina uma senha para sua conta Google (mínimo de 8 caracteres):');if(!p)return;if(p.length<8){onError(new Error('Use pelo menos 8 caracteres.'));return;}try{await addPassword(p);alert('Senha vinculada à mesma conta. Você também pode entrar por e-mail.');}catch(e){onError(new Error('Não foi possível vincular: '+(e.code||e.message)+'. Consulte o administrador se o e-mail já tiver outra conta.'));}});
-  return onAuthStateChanged(auth,async u=>{
-    if(!u){lastUid=null;view?.classList.remove('hidden');body?.classList.add('hidden');if(status)status.textContent='Entre para continuar';await onUser(null,null);return;}
-    try{const p=await profileFor(u); if(auth.currentUser?.uid!==u.uid)return;
-      if(!activeProfile(p)){view?.classList.remove('hidden');body?.classList.add('hidden');if(status)status.textContent=p?'Conta desativada':'Sem perfil em usuarios (peça acesso ao administrador)';await onUser(u,null);return;}
-      view?.classList.add('hidden');body?.classList.remove('hidden');if(status)status.textContent='';lastUid=u.uid;await onUser(u,p);
-    }catch(e){onError(e);view?.classList.remove('hidden');body?.classList.add('hidden');}
+// Cadastro livre: um novo UID só pode criar perfil normal/ativo.
+// Para e-mail/senha, exige confirmação do endereço; Google normalmente já chega verificado.
+// Perfil de administrador/Compras/Fiscal/Cadastro só é concedido pelo admin existente.
+export async function profileFor(user) {
+  if (!user) return null;
+  const target = doc(db, 'usuarios', user.uid);
+  const existing = await getDoc(target);
+  if (existing.exists()) return { id: existing.id, ...existing.data() };
+  if (!user.email || !user.emailVerified) return null;
+
+  const email = plain(user.email).toLowerCase();
+  const suggested = plain(user.displayName || email.split('@')[0]).slice(0, 120);
+  const nome = suggested.length >= 2 ? suggested : email.split('@')[0];
+  // Transação: não sobrescrever perfis existentes se outra sessão criar primeiro.
+  await runTransaction(db, async tx => {
+    const current = await tx.get(target);
+    if (current.exists()) return;
+    tx.set(target, {
+      nome, email, papel: 'usuario', ativo: true,
+      origem: 'autocadastro', criadoEm: serverTimestamp()
+    });
   });
+  const result = await getDoc(target);
+  return result.exists() ? { id: result.id, ...result.data() } : null;
+}
+export async function registerEmailAccount(nome, email, password) {
+  const cleanName = plain(nome);
+  const normalized = plain(email).toLowerCase();
+  if (cleanName.length < 2 || cleanName.length > 120) throw new Error('Informe seu nome (2 a 120 caracteres).');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized) || normalized.length > 254) throw new Error('Informe um e-mail válido.');
+  if (String(password).length < 8) throw new Error('A senha deve ter pelo menos 8 caracteres.');
+  const credential = await createUserWithEmailAndPassword(auth, normalized, String(password));
+  // O nome acompanha a conta Firebase Auth e será usado no perfil quando verificado.
+  await updateProfile(credential.user, { displayName: cleanName });
+  await sendEmailVerification(credential.user);
+  return credential.user;
+}
+
+export async function setPreferredName(nome) {
+  const user = auth.currentUser;
+  if (!user) throw new Error('Entre com a conta primeiro.');
+  const clean = plain(nome).slice(0, 120);
+  if (clean.length < 2) throw new Error('Informe um nome com pelo menos 2 caracteres.');
+  const target = doc(db, 'usuarios', user.uid);
+  const existing = await getDoc(target);
+  // Primeiro salvamos o nome no perfil do Comercial; caso o Firestore negue,
+  // não deixamos o nome do Firebase Auth alterado pela metade.
+  if (existing.exists() && existing.data()?.nome !== clean) {
+    try {
+      await updateDoc(target, { nome: clean, atualizadoEm: serverTimestamp() });
+    } catch (error) {
+      if (error?.code === 'permission-denied') {
+        throw new Error('O Firestore negou a atualização do nome. Publique o firestore.rules da correção V2.5.4.1 antes de tentar novamente.');
+      }
+      throw error;
+    }
+  }
+  if (user.displayName !== clean) await updateProfile(user, { displayName: clean });
+  return clean;
+}
+
+export async function confirmVerifiedEmail() {
+  const user = auth.currentUser;
+  if (!user) throw new Error('Entre na conta cadastrada para verificar seu e-mail.');
+  await reload(user);
+  await user.getIdToken(true);
+  if (!user.emailVerified) throw new Error('E-mail ainda não confirmado. Abra a mensagem de verificação e clique no link.');
+  return user;
+}
+
+export function initAuthUI({onUser, onError=console.error}) {
+  const view = document.getElementById('authScreen');
+  const body = document.getElementById('mainScreen');
+  const status = document.getElementById('authStatus');
+  const form = document.getElementById('loginForm');
+  const updateStatus = value => { if (status) status.textContent = value; };
+  let working = false;
+
+  async function displayUser(u) {
+    if (!u) {
+      view?.classList.remove('hidden');
+      body?.classList.add('hidden');
+      updateStatus('Entre para continuar');
+      await onUser(null, null);
+      return;
+    }
+    try {
+      const profile = await profileFor(u);
+      if (auth.currentUser?.uid !== u.uid) return;
+      if (!activeProfile(profile)) {
+        view?.classList.remove('hidden');
+        body?.classList.add('hidden');
+        updateStatus(profile
+          ? 'Conta desativada. Peça autorização ao administrador.'
+          : (!u.emailVerified
+              ? `Confirme seu e-mail (${u.email || 'não informado'}) para ativar o cadastro.`
+              : 'Não foi possível criar seu perfil. Consulte o administrador.'));
+        await onUser(u, null);
+        return;
+      }
+      view?.classList.add('hidden');
+      body?.classList.remove('hidden');
+      updateStatus('');
+      await onUser(u, profile);
+    } catch (e) {
+      onError(e);
+      view?.classList.remove('hidden');
+      body?.classList.add('hidden');
+      updateStatus('Não foi possível conferir seu acesso. Confira a conexão e as regras.');
+    }
+  }
+
+  form?.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    if (working) return;
+    working = true;
+    try {
+      const data = new FormData(form);
+      await loginEmail(plain(data.get('email')), String(data.get('password') || ''));
+    } catch (e) { onError(e); }
+    finally { working = false; }
+  });
+  document.getElementById('googleLogin')?.addEventListener('click', async () => {
+    if (working) return;
+    working = true;
+    try { await loginGoogle(); } catch(e) { onError(e); }
+    finally { working = false; }
+  });
+  document.getElementById('verifyEmail')?.addEventListener('click', async () => {
+    if (working) return;
+    working = true;
+    try { const u = await confirmVerifiedEmail(); await displayUser(u); }
+    catch(e) { onError(e); }
+    finally { working = false; }
+  });
+  document.getElementById('resendVerification')?.addEventListener('click', async () => {
+    try {
+      if (!auth.currentUser) throw new Error('Entre com a conta primeiro.');
+      if (auth.currentUser.emailVerified) throw new Error('Este e-mail já está verificado.');
+      await sendEmailVerification(auth.currentUser);
+      alert('Solicitação enviada. Confira a caixa de entrada e o spam.');
+    } catch (e) { onError(e); }
+  });
+  document.getElementById('resetLogin')?.addEventListener('click', async () => {
+    const email = plain(form?.querySelector('[name=email]')?.value);
+    if (!email) { onError(new Error('Digite seu e-mail primeiro.')); return; }
+    try { await resetPassword(email); alert('Se a conta permitir recuperação, você receberá as instruções por e-mail.'); }
+    catch(e) { onError(e); }
+  });
+  document.getElementById('logoutButton')?.addEventListener('click', () => logout().catch(onError));
+  document.getElementById('signOutLogin')?.addEventListener('click', () => logout().catch(onError));
+  document.getElementById('setPassword')?.addEventListener('click', async () => {
+    const password = prompt('Defina uma senha para sua conta Google (mínimo de 8 caracteres):');
+    if (!password) return;
+    if (password.length < 8) { onError(new Error('Use pelo menos 8 caracteres.')); return; }
+    try { await addPassword(password); alert('Senha vinculada à mesma conta. Você também pode entrar por e-mail.'); }
+    catch(e) { onError(new Error('Não foi possível vincular: ' + (e.code || e.message) + '. Consulte o administrador se o e-mail já tiver outra conta.')); }
+  });
+  return onAuthStateChanged(auth, displayUser);
 }
