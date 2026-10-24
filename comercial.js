@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.4.0
+// @name         Comercial • Infradesk • Registro de divergências V2.4.1
 // @namespace    comercial/infradesk
-// @version      2.3.4
+// @version      2.4.1
 // @description  Uma NF por chave; divergências independentes; cada resposta encerra uma passagem. Sem consultas automáticas por card.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
@@ -14,11 +14,11 @@
   'use strict';
   if (window.__COMERCIAL_APP_RUNNING__) return;
   if (!window.firebase?.auth || !window.firebase?.firestore) {
-    console.error('[Comercial V2.4.0] Firebase compat não encontrado. Confira o loader.');
+    console.error('[Comercial V2.4.1] Firebase compat não encontrado. Confira o loader.');
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.4.0';
+  window.__COMERCIAL_APP_VERSION__ = '2.4.1';
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
   const CONFIG = {
@@ -88,72 +88,45 @@
     writeCardCache(cache);
   }
   function latestMillis(value) { return value?.toMillis?.() || (value ? new Date(value).getTime() : 0) || 0; }
-  // Compatibilidade: a V2.3.3 registrava respostas como 'em_crf'.
-  // Se existe uma resposta gravada e não há passagem ativa, o registro já foi respondido.
-  // Apenas leitura de legado: não modifica o Firestore nem gera gravações extras.
+  // As versões anteriores criavam outros estados. A interface atual tem apenas
+  // "Aberta" e "Respondida"; não regrava o histórico antigo.
   function isAnswered(d) {
-    return Boolean(d && (d.status === 'respondida' || (d.status === 'em_crf' && !d.passagemAbertaId && (d.ultimaRespostaId || d.ultimaRespostaNome))));
+    if (!d) return false;
+    if (d.passagemAbertaId) return false;
+    return ['respondida', 'concluida', 'devolucao'].includes(d.status)
+      || (d.status === 'em_crf' && Boolean(d.ultimaRespostaId || d.ultimaRespostaNome));
   }
-  function effectiveStatus(d) { return isAnswered(d) ? 'respondida' : (d?.status || ''); }
-  function statusTitle(d) {
-    const labels = {aberta:'Aberta',respondida:'Respondida',em_crf:'Aguardando CRF',concluida:'Concluída',devolucao:'Devolver / recusar'};
-    return labels[effectiveStatus(d)] || d?.status || '—';
-  }
+  function effectiveStatus(d) { return isAnswered(d) ? 'respondida' : 'aberta'; }
+  function statusTitle(d) { return effectiveStatus(d) === 'respondida' ? 'Respondida' : 'Aberta'; }
   function cardStatusInfo(summary) {
-    if (!summary) return { key: '', label: '' };
-    if (summary.status === 'aberta') return { key: 'aberta', label: summary.statusText || 'Aberta' };
-    if (summary.status === 'em_crf') return { key: 'em_crf', label: summary.statusText || 'Em validação CRF' };
-    if (summary.status === 'concluida') return { key: 'concluida', label: summary.statusText || 'Finalizada' };
-    if (summary.status === 'respondida') return { key: 'respondida', label: summary.statusText || 'Respondida' };
-    if (summary.status === 'devolucao') return { key: 'devolucao', label: summary.statusText || 'Devolução' };
-    return { key: summary.status || 'aberta', label: summary.statusText || 'Aberta' };
+    if (!summary) return {key:'', label:''};
+    return summary.status === 'respondida'
+      ? {key:'respondida', label:'Respondida'}
+      : {key:'aberta', label:'Aberta'};
   }
   function summarizeDivergences(divs, chave = '') {
     if (!Array.isArray(divs) || !divs.length) return null;
     const ordered = [...divs].sort((a,b) => latestMillis(b.atualizadoEm || b.ultimaOcorrenciaEm || b.criadoEm) - latestMillis(a.atualizadoEm || a.ultimaOcorrenciaEm || a.criadoEm));
-    const open = ordered.find(d => d.passagemAbertaId && d.status === 'aberta');
-    const inCrf = ordered.find(d => d.status === 'em_crf' && !isAnswered(d));
-    const chosen = open || inCrf || ordered[0];
+    const open = ordered.find(d => d.passagemAbertaId);
+    const chosen = open || ordered[0];
     const setorKey = chosen?.setorAtual || chosen?.setor || '';
     const setorNome = sectors[setorKey] || setorKey || 'Setor';
     const comprador = trim(chosen?.compradorAtualNome || chosen?.compradorNome || '');
-    const abertas = ordered.filter(d => d.passagemAbertaId && d.status === 'aberta').length;
-    const pendentesCrf = ordered.filter(d => d.status === 'em_crf' && !isAnswered(d)).length;
+    const abertas = ordered.filter(d=>d.passagemAbertaId).length;
     const respondidas = ordered.filter(isAnswered).length;
-    const resolvidas = ordered.filter(d => ['concluida','devolucao'].includes(d.status)).length;
-    let status = 'aberta', statusText = 'Aberta';
-    if (open) {
-      status = 'aberta';
-      statusText = setorNome;
-    } else if (inCrf) {
-      status = 'em_crf';
-      statusText = 'Retornou à CRF';
-    } else if (isAnswered(chosen)) {
-      status = 'respondida';
-      statusText = 'Respondida';
-    } else if (chosen?.status === 'devolucao') {
-      status = 'devolucao';
-      statusText = 'Devolução';
-    } else {
-      status = 'concluida';
-      statusText = 'Finalizada';
-    }
     const footerParts = [];
     if (comprador) footerParts.push(comprador);
     if (abertas) footerParts.push(`${abertas} aberta(s)`);
-    else if (pendentesCrf) footerParts.push(`${pendentesCrf} aguardando CRF`);
-    else if (respondidas) footerParts.push(`${respondidas} respondida(s)`);
-    else if (resolvidas) footerParts.push(`${resolvidas} finalizada(s)`);
+    if (respondidas) footerParts.push(`${respondidas} respondida(s)`);
     return {
       chave: onlyDigits(chave || chosen?.chave || ''),
-      status, statusText,
+      status: abertas ? 'aberta' : 'respondida',
+      statusText: abertas ? 'Aberta' : 'Respondida',
       tipoNome: trim(chosen?.tipoNome || 'Divergência'),
-      setorNome,
-      compradorNome: comprador,
-      ultimaOcorrenciaTexto: trim(chosen?.ultimaOcorrenciaTexto || chosen?.ultimaRespostaNome || chosen?.tipoNome || 'Divergência registrada.'),
-      atualizadoEm: chosen?.ultimaOcorrenciaEm || chosen?.atualizadoEm || chosen?.criadoEm || null,
-      footer: footerParts.join(' • '),
-      total: ordered.length
+      setorNome, compradorNome:comprador,
+      ultimaOcorrenciaTexto:trim(chosen?.ultimaOcorrenciaTexto || chosen?.ultimaRespostaNome || chosen?.tipoNome || 'Divergência registrada.'),
+      atualizadoEm:chosen?.ultimaOcorrenciaEm || chosen?.atualizadoEm || chosen?.criadoEm || null,
+      footer:footerParts.join(' • '), total:ordered.length
     };
   }
   function removeCardBox(card) {
@@ -224,7 +197,7 @@
       }
       cards.forEach(renderCardFromCache);
     } catch(e) {
-      console.warn('[Comercial V2.4.0] Atualização de cards visíveis falhou:',e);
+      console.warn('[Comercial V2.4.1] Atualização de cards visíveis falhou:',e);
     } finally { state.visibleLookupBusy = false; }
   }
 
@@ -367,10 +340,9 @@
           <span class="cv-login-help">Informe as credenciais do <b>Comercial</b>, não as do Infradesk. Os campos só aparecem quando você abre o login para evitar preenchimento automático de outra conta.</span>
         </div>
         <div id="cv-form" class="cv-hidden" style="display:grid;gap:12px">
-          <label>Qual divergência você quer movimentar?<select id="cv-div"><option value="">+ Nova divergência</option></select></label>
+          <label>Divergência da nota<select id="cv-div"><option value="">+ Nova divergência</option></select></label>
           <div id="cv-current" class="cv-card cv-hidden"></div>
-          <label id="cv-action-wrap">Próxima ação<select id="cv-action"></select></label>
-          <div class="cv-grid" id="cv-target"><label>Setor para encaminhamento<select id="cv-sector"><option value="">Selecione</option><option value="comercial">Comercial</option><option value="fiscal">Fiscal (Sicofe)</option><option value="cadastro">Cadastro</option></select></label><label id="cv-type-wrap">Tipo de divergência<select id="cv-type"><option value="">Selecione</option></select></label></div>
+          <div class="cv-grid" id="cv-target"><label>Setor responsável<select id="cv-sector"><option value="">Selecione</option><option value="comercial">Comercial</option><option value="fiscal">Fiscal (Sicofe)</option><option value="cadastro">Cadastro</option></select></label><label id="cv-type-wrap">Tipo de divergência<select id="cv-type"><option value="">Selecione</option></select></label></div>
           <label id="cv-buyer-wrap">Comprador responsável<select id="cv-buyer"><option value="">Selecione</option></select></label>
           <label id="cv-response-wrap" class="cv-hidden">Resposta recebida do setor<select id="cv-response"><option value="">Selecione uma resposta</option></select></label>
           <label id="cv-details-wrap"><span id="cv-details-title">Observação / detalhes (opcional)</span><textarea id="cv-text" rows="3" placeholder="Observação adicional, se necessário..."></textarea><span id="cv-description-preview" class="cv-description"></span></label>
@@ -383,7 +355,6 @@
     $('#cv-close').onclick = close;
     $('#cv-cancel').onclick = close;
     $('#cv-div').onchange = renderSelected;
-    $('#cv-action').onchange = renderMode;
     $('#cv-sector').onchange = () => { renderTypes(); renderBuyers(); };
     $('#cv-type').onchange = fillTypeDescription;
     $('#cv-response').onchange = renderResponseDetailRequirement;
@@ -596,65 +567,58 @@
     const dropdown=$('#cv-div');
     dropdown.replaceChildren(new Option('+ Abrir nova divergência',''));
     for (const d of state.divergences) {
-      const label = `${d.tipoNome||'Divergência'} • ${d.status||'—'} • ${d.compradorNome||sectors[d.setor]||'—'}`;
+      const label = `${d.tipoNome||'Divergência'} • ${statusTitle(d)} • ${d.compradorNome||sectors[d.setor]||'—'}`;
       dropdown.add(new Option(label,d.id));
     }
     renderSelected();
   }
   function renderSelected() {
-    state.selected = state.divergences.find(d=>d.id===$('#cv-div').value)||null;
-    const d=state.selected;
-    const select=$('#cv-action');
-    const closed = Boolean(d && (isAnswered(d) || ['concluida','devolucao'].includes(d.status)));
-    const options = !d ? [['abrir','Abrir e encaminhar divergência']] :
-      closed ? [] :
-      d.passagemAbertaId ? [['responder','Registrar resposta recebida (para o relógio)'],['observacao','Adicionar observação (mantém relógio)']] :
-      [['encaminhar','Encaminhar novamente'],['concluir','Concluir após validação CRF'],['devolver','Marcar para devolução/recusa'],['observacao','Adicionar observação']];
-    select.replaceChildren(...options.map(([v,t])=>new Option(t,v)));
-    const box=$('#cv-current');
+    state.selected = state.divergences.find(d=>d.id===$('#cv-div').value) || null;
+    state.autoDetails = '';
+    $('#cv-text').value = '';
+    $('#cv-response').value = '';
+    const d = state.selected;
+    const box = $('#cv-current');
     box.classList.toggle('cv-hidden',!d);
     if (d) {
-      const set=d.setorAtual || d.setor;
-      box.innerHTML = `<b>Divergência:</b> ${escape(d.tipoNome||'—')} <span class="cv-pill">${escape(statusTitle(d))}</span><br><b>Setor:</b> ${escape(sectors[set]||set||'CRF')} • <b>Comprador:</b> ${escape(d.compradorAtualNome||d.compradorNome||'—')}<br><b>Passagem:</b> ${d.passagemAbertaId ? 'aguardando resposta (tempo contando)' : 'relógio encerrado'} • <b>Última ocorrência:</b> ${escape(timeString(d.ultimaOcorrenciaEm))}${isAnswered(d) ? `<br><b>Resposta:</b> ${escape(d.ultimaRespostaNome || 'Registrada')}` : ''}`;
-      $('#cv-sector').value = d.setorAtual || d.setor || '';
-    } else $('#cv-sector').value='';
+      const set = d.setorAtual || d.setor;
+      box.innerHTML = `<b>Divergência:</b> ${escape(d.tipoNome||'—')} <span class="cv-pill">${escape(statusTitle(d))}</span><br><b>Setor:</b> ${escape(sectors[set]||set||'—')} • <b>Comprador:</b> ${escape(d.compradorAtualNome||d.compradorNome||'—')}<br><b>Passagem:</b> ${d.passagemAbertaId ? 'aguardando resposta (tempo contando)' : 'encerrada (relógio parado)'} • <b>Última ocorrência:</b> ${escape(timeString(d.ultimaOcorrenciaEm))}${isAnswered(d) ? `<br><b>Resposta:</b> ${escape(d.ultimaRespostaNome || 'Registrada')}` : ''}`;
+      $('#cv-sector').value = set || '';
+    } else {
+      $('#cv-sector').value = '';
+    }
     renderMode();
   }
   function renderMode() {
-    const d=state.selected;
-    const closed = Boolean(d && (isAnswered(d) || ['concluida','devolucao'].includes(d.status)));
-    const mode = state.mode = closed ? 'visualizar' : $('#cv-action').value;
-    $('#cv-action-wrap').classList.toggle('cv-hidden', closed);
-    $('#cv-details-wrap').classList.toggle('cv-hidden', closed);
-    $('#cv-save').classList.toggle('cv-hidden', closed);
+    const d = state.selected;
+    // Sem menu Próxima ação: divergência nova abre; divergência aberta recebe
+    // resposta; divergência já respondida é apenas leitura.
+    const closed = Boolean(d && !d.passagemAbertaId);
+    const mode = state.mode = !d ? 'abrir' : closed ? 'visualizar' : 'responder';
+    const opening = mode === 'abrir';
+    const responding = mode === 'responder';
+    $('#cv-target').classList.toggle('cv-hidden',!opening);
+    $('#cv-type-wrap').classList.toggle('cv-hidden',!opening);
+    $('#cv-response-wrap').classList.toggle('cv-hidden',!responding);
+    $('#cv-buyer-wrap').classList.toggle('cv-hidden',!opening || $('#cv-sector').value!=='comercial');
+    $('#cv-details-wrap').classList.toggle('cv-hidden',closed);
+    $('#cv-save').classList.toggle('cv-hidden',closed);
     $('#cv-save').disabled = closed || !canRecord();
-    const target=['abrir','encaminhar','reabrir'].includes(mode);
-    const response=mode==='responder';
-    $('#cv-target').classList.toggle('cv-hidden',!target);
-    $('#cv-type-wrap').classList.toggle('cv-hidden',mode!=='abrir');
-    $('#cv-response-wrap').classList.toggle('cv-hidden',!response);
-    $('#cv-buyer-wrap').classList.toggle('cv-hidden',!target || $('#cv-sector').value!=='comercial');
-    $('#cv-sector').disabled=false;
-    if (target) {
-      if(d && !$('#cv-sector').value) $('#cv-sector').value=d.setorAtual||d.setor||'';
-      renderTypes(); renderBuyers();
-    }
-    if (response) renderResponses();
-    if (mode !== 'abrir' && state.autoDetails && trim($('#cv-text').value) === state.autoDetails) {
-      $('#cv-text').value = '';
-      state.autoDetails = '';
-    }
-    const needsDetail = mode === 'devolver' || (response && isDevolverResponse(selectedResponse()));
-    $('#cv-details-title').textContent = needsDetail ? 'Observação / detalhes (obrigatória para devolver e recusar)' : 'Observação / detalhes (opcional)';
-    $('#cv-text').required = needsDetail;
+    $('#cv-save').textContent = opening ? 'Abrir divergência' : 'Registrar resposta';
+    $('#cv-text').required = false;
+    $('#cv-details-title').textContent = 'Observação / detalhes (opcional)';
+    $('#cv-text').placeholder = 'Observação adicional, se necessário...';
     $('#cv-description-preview').textContent = '';
-    if (mode === 'abrir') fillTypeDescription();
-    $('#cv-hint').textContent = closed ? 'Esta ocorrência já recebeu uma resposta e está encerrada. Nenhuma nova ação é necessária. O histórico continua disponível no painel. Para outra divergência da nota, selecione “+ Abrir nova divergência”.' :
-      response ? 'Ao salvar uma resposta ativa deste setor, a passagem e a ocorrência serão encerradas. “Informações divergentes” atribui esse período ao retrabalho por erro da CRF.' :
-      target ? 'Ao salvar será iniciada uma nova passagem. A classificação original da divergência não muda. O Comercial não modifica o status do Infradesk.' :
-      mode==='observacao' ? 'Esta observação não muda a situação nem inicia/encerra relógio.' :
-      'Esta ação é da CRF e somente fica disponível sem passagem ativa.';
-    $('#cv-text').placeholder = needsDetail ? 'Explique o motivo da devolução ou recusa (obrigatório)' : 'Observação adicional, se necessário (opcional)';
+    if (opening) { renderTypes(); renderBuyers(); fillTypeDescription(); }
+    if (responding) renderResponses();
+    $('#cv-hint').textContent = closed
+      ? 'Esta divergência já foi respondida; o relógio está encerrado. Para outro problema, use “+ Abrir nova divergência”. O histórico está disponível no painel Comercial.'
+      : responding
+        ? 'Selecione qualquer resposta ativa deste setor. Salvar encerra a ocorrência e para o relógio, independentemente do nome da resposta.'
+        : 'Abrir a divergência inicia a contagem do setor. O Comercial não altera o chamado original no Infradesk.';
+    if (responding && $('#cv-response').options.length <= 1) {
+      $('#cv-hint').textContent = 'Nenhuma resposta ativa deste setor foi encontrada em respostas_v2. Cadastre a resposta no admin.html para encerrar o relógio.';
+    }
   }
   function renderTypes() {
     const select=$('#cv-type');
@@ -692,7 +656,7 @@
   }
   function renderBuyers() {
     const sector=$('#cv-sector').value;
-    $('#cv-buyer-wrap').classList.toggle('cv-hidden',sector!=='comercial' || !['abrir','encaminhar','reabrir'].includes(state.mode));
+    $('#cv-buyer-wrap').classList.toggle('cv-hidden',sector!=='comercial' || state.mode!=='abrir');
     const select=$('#cv-buyer');
     const current=select.value, buyers=activeBuyers();
     select.replaceChildren(new Option(buyers.length ? 'Selecione o comprador' : 'Nenhum comprador ativo vinculado',''));
@@ -713,78 +677,74 @@
   function renderResponses() {
     const sector=state.selected?.setorAtual || state.selected?.setor;
     const select=$('#cv-response');
-    select.replaceChildren(new Option('Selecione a resposta do setor',''));
-    state.catalog.responses.filter(r=>r.ativo!==false && r.setor===sector)
-      .sort((a,b)=>trim(a.nome).localeCompare(trim(b.nome),'pt-BR'))
-      .forEach(r=>select.add(new Option(r.nome,r.id)));
+    const responses=state.catalog.responses.filter(r=>r.ativo!==false && r.setor===sector)
+      .sort((a,b)=>trim(a.nome).localeCompare(trim(b.nome),'pt-BR'));
+    select.replaceChildren(new Option(responses.length ? 'Selecione a resposta do setor' : 'Nenhuma resposta ativa cadastrada para este setor',''));
+    responses.forEach(r=>select.add(new Option(r.nome,r.id)));
+    if (!responses.length) $('#cv-hint').textContent = 'Não há respostas ativas deste setor em respostas_v2. Cadastre-as pelo admin.html antes de registrar o retorno.';
     renderResponseDetailRequirement();
   }
   async function save() {
     if (state.busy || !canRecord() || !state.data) return;
     const action=state.mode, old=state.selected, data=state.data;
-    if (action === 'visualizar' || (old && (isAnswered(old) || ['concluida','devolucao'].includes(old.status)))) {
-      return alertUser('Esta divergência já foi respondida ou encerrada. Não há nova ação pendente.', true);
+    if (!['abrir','responder'].includes(action)) {
+      return alertUser('Esta ocorrência já foi respondida. Para outro problema, abra uma nova divergência.',true);
     }
     const sector=$('#cv-sector').value, typeId=$('#cv-type').value;
     const buyerId=$('#cv-buyer').value, responseId=$('#cv-response').value;
     let details=trim($('#cv-text').value);
-    const forwarding=['abrir','encaminhar','reabrir'].includes(action);
+    const opening=action==='abrir';
     const type=state.catalog.types.find(x=>x.id===typeId);
     const buyer=state.buyers.get(buyerId)?.value || null;
     const response=state.catalog.responses.find(x=>x.id===responseId);
-
-    if (!old && action!=='abrir') return alertUser('Escolha uma divergência.',true);
-    if (action==='abrir' && (!type || type.ativo===false || type.setor!==sector)) return alertUser('Escolha um tipo de divergência ativo deste setor.',true);
-    if (forwarding && !sectors[sector]) return alertUser('Escolha o setor responsável.',true);
-    if (forwarding && sector==='comercial' && (!buyer || buyer.ativo===false || !(state.supplier?.compradorIds||[]).includes(buyerId))) return alertUser('Selecione um comprador ativo vinculado ao CNPJ.',true);
-    if (action==='responder' && (!response || response.ativo===false || response.setor !== (old?.setorAtual||old?.setor))) return alertUser('Escolha uma resposta ativa do setor que recebeu a nota.',true);
-    if ((action === 'devolver' || (action === 'responder' && isDevolverResponse(response))) && !details) {
-      return alertUser('Para Devolver e recusar, informe obrigatoriamente o motivo na observação.', true);
+    if (opening && old) return alertUser('Selecione “+ Abrir nova divergência”.',true);
+    if (!opening && (!old || !old.passagemAbertaId)) return alertUser('Esta divergência não tem relógio aberto. Atualize os dados.',true);
+    if (opening && (!type || type.ativo===false || type.setor!==sector)) return alertUser('Escolha um tipo de divergência ativo deste setor.',true);
+    if (opening && !sectors[sector]) return alertUser('Escolha o setor responsável.',true);
+    if (opening && sector==='comercial' && (!buyer || buyer.ativo===false || !(state.supplier?.compradorIds||[]).includes(buyerId))) {
+      return alertUser('Selecione um comprador ativo vinculado ao CNPJ.',true);
     }
-    // Um evento precisa de texto legível, mas não exige digitação do operador.
-    if (!details) {
-      const fallback = {
-        abrir: `Divergência aberta: ${type?.nome || 'não informada'}.`,
-        encaminhar: `Reencaminhada a ${sectors[sector] || sector}.`,
-        reabrir: `Divergência reaberta e encaminhada a ${sectors[sector] || sector}.`,
-        responder: `Resposta recebida: ${response?.nome || 'não informada'}.`,
-        concluir: 'Divergência concluída após validação da CRF.',
-        observacao: 'Acompanhamento registrado pela CRF.'
-      };
-      details = fallback[action] || 'Ocorrência registrada.';
+    const responseSector=old?.setorAtual||old?.setor;
+    if (!opening && (!response || response.ativo===false || response.setor!==responseSector)) {
+      return alertUser('Escolha uma resposta ativa do setor responsável.',true);
     }
+    if (!opening && isDevolverResponse(response) && !details) {
+      return alertUser('Para Devolver e recusar, informe obrigatoriamente o motivo.',true);
+    }
+    if (!details) details = opening
+      ? `Divergência aberta: ${type.nome}.`
+      : `Resposta recebida: ${response.nome}.`;
 
-    state.busy=true; $('#cv-save').disabled=true; $('#cv-save').textContent='Gravando...';
+    state.busy=true;
+    $('#cv-save').disabled=true;
+    $('#cv-save').textContent='Gravando...';
     const noteRef=db.collection('notas_v2').doc(data.chave);
     const divRef=old?db.collection('divergencias_v2').doc(old.id):db.collection('divergencias_v2').doc();
     const eventRef=db.collection('eventos_v2').doc();
-    const nextPassRef=forwarding?db.collection('passagens_v2').doc():null;
-    const currentPassRef=old?.passagemAbertaId?db.collection('passagens_v2').doc(old.passagemAbertaId):null;
-    const attribution=action==='responder' && erroCrf(response)?'crf_erro':(old?.setorAtual||old?.setor||sector);
+    const nextPassRef=opening?db.collection('passagens_v2').doc():null;
+    const currentPassRef=!opening&&old?.passagemAbertaId?db.collection('passagens_v2').doc(old.passagemAbertaId):null;
+    const attribution=!opening&&erroCrf(response)?'crf_erro':(responseSector||sector);
     try {
       await db.runTransaction(async tx=>{
-        // Leituras da transação SEMPRE antes de qualquer gravação.
+        // Leituras antes de gravar. Uma resposta e o fechamento do relógio são atômicos.
         const nSnap=await tx.get(noteRef);
         const dSnap=old?await tx.get(divRef):null;
         const pSnap=currentPassRef?await tx.get(currentPassRef):null;
-        let supplierSnap=null;
         const supplierRef=db.collection('fornecedores_v2').doc(data.cnpj);
-        if (!state.supplier) supplierSnap=await tx.get(supplierRef);
-
+        const supplierSnap=!state.supplier?await tx.get(supplierRef):null;
         const prior=dSnap?.data()||null;
-        if (old && !dSnap.exists) throw Error('Divergência não encontrada. Reabra a nota.');
-        if (old && (isAnswered(prior) || ['concluida','devolucao'].includes(prior?.status))) throw Error('Divergência já respondida ou encerrada. Atualize esta nota.');
-        if (old && (Number(prior.revisao||0)!==Number(old.revisao||0) || String(prior.passagemAbertaId||'')!==String(old.passagemAbertaId||''))) throw Error('Outro operador já movimentou esta divergência. Reabra a nota para atualizar.');
-        if (action==='responder' && (!prior?.passagemAbertaId || !pSnap?.exists || pSnap.data().fimEm)) throw Error('Esta passagem já foi encerrada. Atualize a nota.');
-        if (action==='observacao' && !old) throw Error('Escolha uma divergência.');
-        if (forwarding && prior?.passagemAbertaId) throw Error('Já existe uma passagem aguardando resposta. Registre o retorno primeiro.');
-        if (['concluir','devolver'].includes(action) && prior?.passagemAbertaId) throw Error('Registre a resposta do setor antes de concluir.');
-        if (['concluir','devolver','encaminhar'].includes(action) && !['em_crf'].includes(prior?.status)) throw Error('Esta divergência não está aguardando a CRF. Atualize a nota.');
-        if (action==='reabrir' && !['concluida','devolucao'].includes(prior?.status)) throw Error('A divergência ainda não foi encerrada.');
-        if (action==='abrir' && prior) throw Error('Esta divergência já existe.');
+        if (!opening) {
+          if (!dSnap?.exists) throw Error('Divergência não encontrada. Atualize a nota.');
+          if (Number(prior.revisao||0)!==Number(old.revisao||0) || String(prior.passagemAbertaId||'')!==String(old.passagemAbertaId||'')) {
+            throw Error('Outro operador já movimentou esta divergência. Atualize a nota.');
+          }
+          if (!prior.passagemAbertaId || !pSnap?.exists || pSnap.data().fimEm) {
+            throw Error('A passagem já foi encerrada. Atualize a nota.');
+          }
+        }
         const now=FV.serverTimestamp();
         const opName=trim(state.profile?.nome||state.user.displayName||state.user.email);
-        const supplierName=state.supplier?.razaoSocial || supplierSnap?.data()?.razaoSocial || data.fornecedorNome;
+        const supplierName=state.supplier?.razaoSocial||supplierSnap?.data()?.razaoSocial||data.fornecedorNome;
         if (!state.supplier && !supplierSnap?.exists) tx.set(supplierRef,{
           cnpj:data.cnpj,razaoSocial:data.fornecedorNome,nomeInfradesk:data.fornecedorNome,
           origemRazaoSocial:'infradesk',compradorIds:[],ativo:true,criadoEm:now,atualizadoEm:now
@@ -798,71 +758,66 @@
           ultimaAcao:action,ultimaOcorrenciaTexto:details,atualizadoEm:now,versao:2
         };
         if (data.chamadoInfradeskId) noteData.chamadosInfradeskIds=FV.arrayUnion(data.chamadoInfradeskId);
-        if(!nSnap.exists) tx.set(noteRef,{...noteData,criadoEm:now,divergenciasCount:action==='abrir'?1:0});
-        else tx.update(noteRef,{...noteData,...(action==='abrir'?{divergenciasCount:FV.increment(1)}:{})});
+        if (!nSnap.exists) tx.set(noteRef,{...noteData,criadoEm:now,divergenciasCount:opening?1:0});
+        else tx.update(noteRef,{...noteData,...(opening?{divergenciasCount:FV.increment(1)}:{})});
 
-        // Toda resposta encerra a passagem. O efeito cadastrado, quando explícito,
-        // apenas classifica o resultado final; não exige outra movimentação da CRF.
-        const responseStatus = action === 'responder'
-          ? (isDevolverResponse(response) ? 'devolucao' : response?.efeito === 'concluir' ? 'concluida' : 'respondida')
-          : '';
-        const nextStatus=forwarding?'aberta':action==='responder'?responseStatus:action==='concluir'?'concluida':action==='devolver'?'devolucao':prior.status;
-        const buyerName=sector==='comercial'?(buyer?.nome||''):'';
-        if (!prior) tx.set(divRef,{
-          chave:data.chave,cnpj:data.cnpj,numeroNf:data.numeroNf,fornecedorNome:supplierName,
-          criadoEm:now,atualizadoEm:now,abertoPor:state.user.uid,abertoPorNome:opName,
-          setor:sector,tipoId:typeId,tipoNome:type.nome,
-          categoriaNota:data.categoriaNota||'',
-          compradorId:buyerId,compradorNome:buyerName,
-          setorAtual:sector,compradorAtualId:buyerId,compradorAtualNome:buyerName,
-          status:'aberta',passagemAbertaId:nextPassRef.id,passagensCount:1,revisao:1,
-          ultimaOcorrenciaTexto:details,ultimaOcorrenciaEm:now
-        });
-        else {
-          const changes={atualizadoEm:now,ultimaOcorrenciaTexto:details,ultimaOcorrenciaEm:now,status:nextStatus,revisao:FV.increment(1)};
-          if (forwarding) Object.assign(changes,{
-            passagemAbertaId:nextPassRef.id,passagensCount:FV.increment(1),
-            setorAtual:sector,compradorAtualId:sector==='comercial'?buyerId:'',compradorAtualNome:buyerName,
-            ...(action==='reabrir'?{resolvidoEm:null}:{})
+        const buyerName=opening&&sector==='comercial'?(buyer?.nome||''):'';
+        if (opening) {
+          tx.set(divRef,{
+            chave:data.chave,cnpj:data.cnpj,numeroNf:data.numeroNf,fornecedorNome:supplierName,
+            criadoEm:now,atualizadoEm:now,abertoPor:state.user.uid,abertoPorNome:opName,
+            setor:sector,tipoId:typeId,tipoNome:type.nome,categoriaNota:data.categoriaNota||'',
+            compradorId:buyerId,compradorNome:buyerName,
+            setorAtual:sector,compradorAtualId:buyerId,compradorAtualNome:buyerName,
+            status:'aberta',passagemAbertaId:nextPassRef.id,passagensCount:1,revisao:1,
+            ultimaOcorrenciaTexto:details,ultimaOcorrenciaEm:now
           });
-          if (data.categoriaNota && !prior.categoriaNota) changes.categoriaNota=data.categoriaNota;
-          if (action==='responder') Object.assign(changes,{passagemAbertaId:null,ultimaRespostaId:response.id,ultimaRespostaNome:response.nome,encerradoEm:now});
-          if (['concluir','devolver'].includes(action)) Object.assign(changes,{passagemAbertaId:null,resolvidoEm:now});
-          tx.update(divRef,changes);
+          tx.set(nextPassRef,{
+            chave:data.chave,divergenciaId:divRef.id,setor:sector,
+            compradorId:sector==='comercial'?buyerId:'',compradorNome:buyerName,
+            inicioEm:now,fimEm:null,criadoPor:state.user.uid,criadoPorNome:opName,
+            chamadoInfradeskId:data.chamadoInfradeskId||''
+          });
+        } else {
+          tx.update(divRef,{
+            atualizadoEm:now,ultimaOcorrenciaTexto:details,ultimaOcorrenciaEm:now,
+            status:'respondida',passagemAbertaId:null,
+            ultimaRespostaId:response.id,ultimaRespostaNome:response.nome,encerradoEm:now,
+            ...(data.categoriaNota&&!prior.categoriaNota?{categoriaNota:data.categoriaNota}:{}),
+            revisao:FV.increment(1)
+          });
+          tx.update(currentPassRef,{
+            fimEm:now,fechadoPor:state.user.uid,fechamento:'resposta',
+            respostaId:response.id,respostaNome:response.nome,atribuicaoTempo:attribution
+          });
         }
-        if (nextPassRef) tx.set(nextPassRef,{
-          chave:data.chave,divergenciaId:divRef.id,setor:sector,
-          compradorId:sector==='comercial'?buyerId:'',compradorNome:buyerName,
-          inicioEm:now,fimEm:null,criadoPor:state.user.uid,criadoPorNome:opName,
-          chamadoInfradeskId:data.chamadoInfradeskId||''
-        });
-        if (action==='responder') tx.update(currentPassRef,{
-          fimEm:now,fechadoPor:state.user.uid,fechamento:'resposta',
-          respostaId:response.id,respostaNome:response.nome,atribuicaoTempo:attribution
-        });
         tx.set(eventRef,{
           chave:data.chave,divergenciaId:divRef.id,acao:action,
-          setor:action==='responder'?(prior?.setorAtual||prior?.setor):forwarding?sector:(prior?.setorAtual||prior?.setor),
-          compradorId:forwarding?buyerId:(prior?.compradorAtualId||prior?.compradorId||''),
-          compradorNome:forwarding?buyerName:(prior?.compradorAtualNome||prior?.compradorNome||''),
-          respostaId:action==='responder'?response.id:'',respostaNome:action==='responder'?response.nome:'',
-          atribuicaoTempo:action==='responder'?attribution:'',
-          passagemId:action==='responder'?(prior?.passagemAbertaId||''):(nextPassRef?.id||''),
+          setor:opening?sector:responseSector,
+          compradorId:opening?buyerId:(prior?.compradorAtualId||prior?.compradorId||''),
+          compradorNome:opening?buyerName:(prior?.compradorAtualNome||prior?.compradorNome||''),
+          respostaId:opening?'':response.id,respostaNome:opening?'':response.nome,
+          atribuicaoTempo:opening?'':attribution,
+          passagemId:opening?nextPassRef.id:(prior?.passagemAbertaId||''),
           texto:details,chamadoInfradeskId:data.chamadoInfradeskId||'',
           empresa:data.empresa||'',categoriaNota:data.categoriaNota||nSnap.data()?.categoriaNota||'',
           usuarioId:state.user.uid,usuarioNome:opName,usuarioEmail:state.user.email||'',criadoEm:now
         });
       });
       await loadNote();
-      const summary = summarizeDivergences(state.divergences, state.data?.chave);
-      rememberCardSummary(state.data?.chave, summary);
-      renderCardBox(state.card, summary);
-      alertUser(action==='responder'?'Resposta registrada. Passagem e divergência encerradas.':action==='abrir'?'Divergência aberta e encaminhada.':'Evento gravado com sucesso.');
+      const summary=summarizeDivergences(state.divergences,state.data?.chave);
+      rememberCardSummary(state.data?.chave,summary);
+      renderCardBox(state.card,summary);
+      alertUser(opening?'Divergência aberta. O relógio iniciou.':'Resposta registrada. Divergência respondida; relógio encerrado.');
       close(true);
     } catch(e) {
-      console.error('[Comercial V2.3.1] Erro ao salvar:',e);
-      alertUser(e?.code==='permission-denied'?'Acesso negado. Publique as novas regras do Firestore antes do teste.':(e.message||'Falha ao salvar'),true);
-    } finally {state.busy=false;$('#cv-save').disabled=!canRecord();$('#cv-save').textContent='Salvar ocorrência';}
+      console.error('[Comercial V2.4.1] Erro ao salvar:',e);
+      alertUser(e?.code==='permission-denied'?'Acesso negado. Verifique as regras do Firestore.':(e.message||'Falha ao salvar'),true);
+    } finally {
+      state.busy=false;
+      $('#cv-save').disabled=!canRecord();
+      $('#cv-save').textContent=state.mode==='abrir'?'Abrir divergência':'Registrar resposta';
+    }
   }
   function addButton(card) {
     if ($('.comercial-v2-button',card)) return;
@@ -893,7 +848,7 @@
   });
   function boot() {
     createUI();scan();observer.observe(document.body,{childList:true,subtree:true});
-    console.info('[Comercial V2.4.0] Pronto. Cards consultam apenas chaves visíveis, sem listeners em tempo real.');
+    console.info('[Comercial V2.4.1] Pronto. Cards consultam apenas chaves visíveis, sem listeners em tempo real.');
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
