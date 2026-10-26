@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.4.5
+// @name         Comercial • Infradesk • Registro de divergências V2.4.6
 // @namespace    comercial/infradesk
-// @version      2.4.5
-// @description  Uma NF por chave; divergências independentes; cada resposta encerra uma passagem. Modo econômico como Xabuia: coluna 6 apenas; checagem pontual antes de arrastar.
+// @version      2.4.6
+// @description  Uma NF por chave; somente verifica ao tentar sair da fila Em Análise Terceiro; sem Firebase, libera a movimentação.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
 // @noframes
@@ -14,11 +14,11 @@
   'use strict';
   if (window.__COMERCIAL_APP_RUNNING__) return;
   if (!window.firebase?.auth || !window.firebase?.firestore) {
-    console.error('[Comercial V2.4.5] Firebase compat não encontrado. Confira o loader.');
+    console.error('[Comercial V2.4.6] Firebase compat não encontrado. Confira o loader.');
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.4.5';
+  window.__COMERCIAL_APP_VERSION__ = '2.4.6';
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
   const CONFIG = {
@@ -60,10 +60,12 @@
   const CARD_CACHE_KEY = 'comercial_v2_card_cache_uid';
   const KANBAN_STATUS_ID = '6'; // Xabuia: Em Análise Terceiro.
   const KANBAN_STATUS_LABEL = 'em analise terceiro';
-  const MOVE_CHECK_TTL_MS = 12000; // curto: libera uma nova tentativa sem segunda leitura imediata
+  const MOVE_CHECK_TTL_MS = 12000; // evita repetir a leitura na tentativa seguinte
+  const MOVE_ERROR_COOLDOWN_MS = 20000; // sem conexão: não bloqueia e não tenta consultar a cada pixel
+  const MOVE_SERVER_TIMEOUT_MS = 3200; // se o servidor não responder, libera (fail-open)
   const moveGate = { results: new Map(), pending: new Map(), gesture: null };
   const moveDebug = {
-    version:'2.4.5', windowCaptureActive:false, gestures:0, blocked:0,
+    version:'2.4.6', windowCaptureActive:false, gestures:0, blocked:0,
     checks:0, lastEvent:'', lastOutcome:'', lastNote:''
   };
   window.__COMERCIAL_KANBAN_DIAGNOSTICO__ = moveDebug;
@@ -116,12 +118,12 @@
   function summarizeDivergences(divs, chave = '') {
     if (!Array.isArray(divs) || !divs.length) return null;
     const ordered = [...divs].sort((a,b) => latestMillis(b.atualizadoEm || b.ultimaOcorrenciaEm || b.criadoEm) - latestMillis(a.atualizadoEm || a.ultimaOcorrenciaEm || a.criadoEm));
-    const open = ordered.find(d => d.passagemAbertaId);
+    const open = ordered.find(hasOpenDivergence);
     const chosen = open || ordered[0];
     const setorKey = chosen?.setorAtual || chosen?.setor || '';
     const setorNome = sectors[setorKey] || setorKey || 'Setor';
     const comprador = trim(chosen?.compradorAtualNome || chosen?.compradorNome || '');
-    const abertas = ordered.filter(d=>d.passagemAbertaId).length;
+    const abertas = ordered.filter(hasOpenDivergence).length;
     const respondidas = ordered.filter(isAnswered).length;
     const footerParts = [];
     if (comprador) footerParts.push(comprador);
@@ -235,29 +237,46 @@
     const key = onlyDigits(chave);
     if (moveGate.pending.has(key)) return moveGate.pending.get(key);
     const uid = auth.currentUser?.uid;
+    if (!uid || navigator.onLine === false) return null;
     const task = (async () => {
-      if (!uid) throw new Error('Entre no Comercial para verificar a NF antes de mover.');
-      // Uma consulta somente quando alguém TENTA mover. Sem onSnapshot ou varredura de cards.
-      // get(source: server) impede que o cache antigo autorize uma movimentação offline.
-      const docs = await db.collection('divergencias_v2').where('chave','==',key).get({ source: 'server' });
-      if (auth.currentUser?.uid !== uid) throw new Error('Conta alterada durante a verificação.');
-      const rows = docs.docs.map(snap => ({id:snap.id,...snap.data()}));
-      const open = rows.filter(hasOpenDivergence);
-      const summary = summarizeDivergences(rows,key);
-      rememberCardSummary(key,summary);
-      $$('.chamado-item[data-chamado-id]').filter(card => extract(card)?.chave === key)
-        .forEach(card => renderCardFromCache(card));
-      const result = { open:open.length, checkedAt:Date.now(), allowUntil:Date.now()+MOVE_CHECK_TTL_MS };
-      moveGate.results.set(key,result);
-      return result;
+      // Apenas na tentativa de SAÍDA da fila 6. Nunca varre cartões nem utiliza onSnapshot.
+      // Leitura do servidor: o cache não decide se pode sair com divergência pendente.
+      let timeoutId;
+      try {
+        const response = await Promise.race([
+          db.collection('divergencias_v2').where('chave', '==', key).get({source:'server'}),
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error('Tempo de resposta excedido')), MOVE_SERVER_TIMEOUT_MS);
+          })
+        ]);
+        if (auth.currentUser?.uid !== uid) return null;
+        const rows = response.docs.map(snap => ({id:snap.id, ...snap.data()}));
+        const open = rows.filter(hasOpenDivergence);
+        const summary = summarizeDivergences(rows, key);
+        rememberCardSummary(key, summary);
+        $$('.chamado-item[data-chamado-id]')
+          .filter(card => isTargetCard(card) && extract(card)?.chave === key)
+          .forEach(renderCardFromCache);
+        const result = {open:open.length, checkedAt:Date.now(), allowUntil:Date.now()+MOVE_CHECK_TTL_MS, uid};
+        moveGate.results.set(key, result);
+        return result;
+      } catch (error) {
+        // Sem servidor/conexão/permissão => NÃO bloquear (regra solicitada).
+        if (auth.currentUser?.uid === uid) {
+          moveGate.results.set(key, {open:null, checkedAt:Date.now(), allowUntil:Date.now()+MOVE_ERROR_COOLDOWN_MS, uid});
+        }
+        console.warn('[Comercial Kanban] Firebase indisponível; movimentação liberada:', error);
+        return null;
+      } finally {
+        clearTimeout(timeoutId);
+      }
     })().finally(() => moveGate.pending.delete(key));
     moveGate.pending.set(key,task);
     return task;
   }
-  // O Infradesk pode usar HTML5 Drag & Drop, jQuery UI Sortable ou outra biblioteca.
-  // O sistema anterior só escutava o início do gesto, o que não capturava
-  // todos os caminhos de movimentação. Esta proteção observa também o MOVIMENTO
-  // em window/capture, antes dos handlers comuns do Kanban.
+
+  // Proteção restrita à SAÍDA da fila "Em Análise Terceiro" (ID 6).
+  // O HTML do Infradesk usa jQuery UI Sortable em ul.list-status-chamados.
   const MOVE_CONTROL = [
     '[data-action="mover"]', '[data-action="alterar-status"]',
     '[data-action="move"]', '[data-action="change-status"]',
@@ -275,7 +294,7 @@
   function blockEvent(event) {
     if (event.cancelable) event.preventDefault();
     event.stopImmediatePropagation();
-    if (typeof event.stopPropagation==='function') event.stopPropagation();
+    if (typeof event.stopPropagation === 'function') event.stopPropagation();
   }
   function gesturePoint(event) {
     const t = event.touches?.[0] || event.changedTouches?.[0] || event;
@@ -286,95 +305,131 @@
     if (!(target instanceof Element)) return null;
     return target.closest('.chamado-item[data-chamado-id]');
   }
+  // Aferir a COLUNA sob o ponteiro: não interferir na ordenação dentro da própria fila.
+  function destinationColumnId(at) {
+    if (!at) return '';
+    for (const col of $$('.wrap-status')) {
+      const list = $('ul.list-status-chamados[data-status-id]', col);
+      if (!list) continue;
+      const rect = col.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      if (at.x >= rect.left && at.x <= rect.right && at.y >= rect.top && at.y <= rect.bottom) {
+        return trim(list.getAttribute('data-status-id'));
+      }
+    }
+    return '';
+  }
   function beginMoveGesture(event) {
     if (event.button != null && event.button !== 0) return;
     const card = eventCard(event.target);
-    if (!card) { moveGate.gesture=null; return; }
-    const data=extract(card);
-    if (!data?.chave) { moveGate.gesture=null; return; }
-    const at=gesturePoint(event);
+    // GUARDA 1: nenhuma outra fila chega à consulta, nem com o usuário logado.
+    if (!card || !isTargetCard(card)) { moveGate.gesture = null; return; }
+    const data = extract(card);
+    if (!data?.chave) { moveGate.gesture = null; return; }
+    const at = gesturePoint(event);
     if (!at) return;
-    moveGate.gesture = {card,key:data.chave,nf:data.numeroNf,x:at.x,y:at.y,started:Date.now()};
+    moveGate.gesture = {card, key:data.chave, nf:data.numeroNf, x:at.x, y:at.y, started:Date.now()};
     moveDebug.gestures += 1;
-    moveDebug.lastEvent=event.type+' / início';
-    // Inclui até links e barras do card, pois alguns Kanbans permitem arrastar
-    // por essas áreas. Um clique simples continua funcionando: só bloqueamos
-    // se o ponteiro MOVIMENTAR por mais de MOVE_DISTANCE pixels.
+    moveDebug.lastEvent = event.type+' / fila 6';
+    // Sem leitura no pointerdown ou em clique comum.
   }
-  function clearMoveGesture() { moveGate.gesture=null; }
+  function clearMoveGesture() { moveGate.gesture = null; }
   function requestMoveVerification(key,nf) {
     if (moveGate.pending.has(key)) return;
     moveDebug.checks++;
-    moveNotice(`NF ${nf}: verificando se todas as divergências foram respondidas...`,false);
-    void verifyMoveByServer(key).then(result=>{
-      moveDebug.lastOutcome=result.open?'ABERTA / bloqueado':'SEM DIVERGÊNCIAS ABERTAS / liberado';
-      if (result.open) moveNotice(`NF ${nf}: ${result.open} divergência(s) ABERTA(S). Responda antes de mover.`);
-      else moveNotice(`NF ${nf}: tudo respondido. Você pode tentar mover novamente.`,false);
-    }).catch(error=>{
-      moveDebug.lastOutcome='ERRO / bloqueado';
-      console.warn('[Comercial Kanban] Verificação falhou:',error);
-      moveNotice(`NF ${nf}: não foi possível confirmar no Firebase. Movimentação bloqueada.`);
+    moveNotice(`NF ${nf}: conferindo divergências antes de sair de Em Análise Terceiro...`,false);
+    void verifyMoveByServer(key).then(result => {
+      if (!result) {
+        moveDebug.lastOutcome = 'SEM FIREBASE / liberado';
+        moveNotice(`NF ${nf}: Firebase indisponível. Movimentação liberada; tente novamente.`,false);
+      } else if (result.open > 0) {
+        moveDebug.lastOutcome = 'DIVERGÊNCIAS ABERTAS / bloqueado';
+        moveNotice(`NF ${nf}: ${result.open} divergência(s) ABERTA(S). Responda antes de mover.`);
+      } else {
+        moveDebug.lastOutcome = 'SEM PENDÊNCIAS / liberado';
+        moveNotice(`NF ${nf}: nenhuma divergência aberta. Pode mover agora.`,false);
+      }
     });
   }
   function protectMove(event,key,nf) {
-    const now=Date.now();
-    const verified=moveGate.results.get(key);
-    // Só a confirmação recente de que NÃO existe pendência permite movimentar.
-    if (verified && verified.open===0 && now<verified.allowUntil) {
-      moveDebug.lastOutcome='PERMITIDO / servidor confirmou';
+    // GUARDA 2: sem sessão no Comercial ou offline, o Infradesk continua funcionando.
+    if (!auth.currentUser?.uid || navigator.onLine === false) {
+      moveDebug.lastOutcome = 'DESLOGADO/OFFLINE / liberado';
       return false;
     }
-    moveDebug.blocked++;
-    moveDebug.lastEvent=event.type;
-    moveDebug.lastOutcome=verified?.open?'ABERTA / bloqueado':'PENDENTE DE CONSULTA / bloqueado';
-    moveDebug.lastNote=nf;
-    blockEvent(event);
-    if (verified && verified.open>0 && now<verified.allowUntil) {
-      moveNotice(`NF ${nf}: ${verified.open} divergência(s) sem resposta. Não é permitido mover.`);
-    } else {
-      requestMoveVerification(key,nf);
+    const now = Date.now();
+    const verified = moveGate.results.get(key);
+    if (verified && verified.uid === auth.currentUser.uid && now < verified.allowUntil) {
+      if (verified.open === null || verified.open === 0) {
+        moveDebug.lastOutcome = verified.open === null ? 'FIREBASE INDISPONÍVEL / liberado' : 'SEM PENDÊNCIAS / liberado';
+        return false;
+      }
+      moveDebug.blocked++;
+      moveDebug.lastOutcome = 'DIVERGÊNCIA ABERTA / bloqueado';
+      moveDebug.lastEvent = event.type;
+      moveDebug.lastNote = nf;
+      blockEvent(event);
+      moveNotice(`NF ${nf}: ${verified.open} divergência(s) sem resposta. Não é permitido sair de Em Análise Terceiro.`);
+      return true;
     }
+    // A primeira tentativa é interrompida SOMENTE nesta fila enquanto consulta.
+    // Sem conexão ou sem divergência, a próxima tentativa é liberada imediatamente.
+    moveDebug.blocked++;
+    moveDebug.lastEvent = event.type;
+    moveDebug.lastOutcome = 'CONSULTA DA FILA 6 / aguardando';
+    moveDebug.lastNote = nf;
+    blockEvent(event);
+    requestMoveVerification(key,nf);
     return true;
   }
   function guardMoveMotion(event) {
-    const g=moveGate.gesture;
+    const g = moveGate.gesture;
     if (!g) return;
-    if (event.buttons != null && event.buttons === 0 && !event.type.startsWith('touch')) return;
-    const at=gesturePoint(event);
-    if (!at) return;
-    const distance=Math.hypot(at.x-g.x,at.y-g.y);
-    if (distance<MOVE_DISTANCE) return;
+    if (event.buttons != null && event.buttons === 0 && !event.type.startsWith('touch') && event.type !== 'dragover') return;
+    const at = gesturePoint(event);
+    if (!at || Math.hypot(at.x-g.x,at.y-g.y) < MOVE_DISTANCE) return;
+    // GUARDA 3: só intervém ao cruzar da fila 6 PARA OUTRA fila.
+    const destination = destinationColumnId(at);
+    if (!destination || destination === KANBAN_STATUS_ID) return;
     protectMove(event,g.key,g.nf);
   }
   function guardNativeDrag(event) {
-    const card=eventCard(event.target) || moveGate.gesture?.card;
-    if (!card) return;
-    const data=extract(card);
-    if (!data?.chave) return;
-    protectMove(event,data.chave,data.numeroNf);
+    // HTML5 DnD: identificar origem no dragstart; checar somente ao cruzar colunas.
+    if (event.type === 'dragstart') {
+      if (moveGate.gesture) return;
+      const card = eventCard(event.target);
+      if (!card || !isTargetCard(card)) return;
+      const data = extract(card), at = gesturePoint(event);
+      if (data?.chave && at) moveGate.gesture = {card,key:data.chave,nf:data.numeroNf,x:at.x,y:at.y,started:Date.now()};
+      return;
+    }
+    guardMoveMotion(event);
   }
   function guardMoveControl(event) {
-    const card=eventCard(event.target);
-    if (!card || !event.target.closest(MOVE_CONTROL)) return;
-    const data=extract(card);
-    if (!data?.chave) return;
-    protectMove(event,data.chave,data.numeroNf);
+    const card = eventCard(event.target);
+    if (!card || !isTargetCard(card)) return;
+    const control = event.target.closest(MOVE_CONTROL);
+    if (!control) return;
+    // Botão que somente ABRE um menu não é movimentação confirmada.
+    const destination = trim(control.getAttribute('data-target-status-id') || control.getAttribute('data-destino-status-id') || control.getAttribute('data-novo-status-id') || '');
+    if (!destination || destination === KANBAN_STATUS_ID) return;
+    const data = extract(card);
+    if (data?.chave) protectMove(event,data.chave,data.numeroNf);
   }
   function installKanbanProtection() {
-    // WINDOW/CAPTURE recebe os eventos antes dos listeners normais de DOCUMENT.
-    // Eventos de movimento bloqueados não chegam ao Sortable / Dragula.
     for (const type of ['pointerdown','mousedown','touchstart']) {
       window.addEventListener(type,beginMoveGesture,{capture:true,passive:true});
     }
     for (const type of ['pointermove','mousemove','touchmove']) {
       window.addEventListener(type,guardMoveMotion,{capture:true,passive:false});
     }
-    for (const type of ['pointerup','mouseup','touchend','pointercancel','touchcancel']) {
+    for (const type of ['pointerup','mouseup','touchend','pointercancel','touchcancel','dragend']) {
       window.addEventListener(type,clearMoveGesture,{capture:true,passive:true});
     }
     window.addEventListener('dragstart',guardNativeDrag,{capture:true,passive:false});
+    window.addEventListener('dragover',guardNativeDrag,{capture:true,passive:false});
     window.addEventListener('click',guardMoveControl,{capture:true,passive:false});
-    moveDebug.windowCaptureActive=true;
+    moveDebug.windowCaptureActive = true;
   }
 
   function timeString(ts) {
@@ -563,7 +618,7 @@
       $('#cv-manage-overlay').classList.remove('open');
       alertUser('Razão social e vínculos gravados. Comprador disponível para qualquer setor.');
     }catch(e){
-      console.error('[Comercial V2.4.5] Erro ao vincular compradores:',e);
+      console.error('[Comercial V2.4.6] Erro ao vincular compradores:',e);
       alertUser(e?.code==='permission-denied'?'Permissão negada. Publique as regras novas do Firestore para permitir manutenção por operadores CRF.':(e.message||'Erro ao salvar fornecedor.'),true);
     }finally{state.supplierSaving=false;button.disabled=false;button.textContent='Salvar vínculos';}
   }
@@ -1109,7 +1164,7 @@
       alertUser(opening?'Divergência aberta. O relógio iniciou.':'Resposta registrada. Divergência respondida; relógio encerrado.');
       close(true);
     } catch(e) {
-      console.error('[Comercial V2.4.5] Erro ao salvar:',e);
+      console.error('[Comercial V2.4.6] Erro ao salvar:',e);
       alertUser(e?.code==='permission-denied'?'Acesso negado. Verifique as regras do Firestore.':(e.message||'Falha ao salvar'),true);
     } finally {
       state.busy=false;
@@ -1148,7 +1203,7 @@
     if (!user || state.user?.uid!==user.uid) {
       state.user=user;state.profile=null;state.profileAt=0;
       state.catalog.expiresAt=0;state.buyers.clear();
-      moveGate.results.clear(); moveGate.pending.clear();
+      moveGate.results.clear(); moveGate.pending.clear(); moveGate.gesture = null;
       $$('.comercial-box').forEach(box=>box.remove());
     }
     // Sem leituras automáticas por card: até perfil só é carregado ao abrir o Comercial.
@@ -1160,7 +1215,7 @@
     scan();
     observer.observe(document.body,{childList:true,subtree:true});
     installKanbanProtection();
-    console.info('[Comercial V2.4.5] Proteção Kanban capturando gestos no window. Diagnóstico: window.__COMERCIAL_KANBAN_DIAGNOSTICO__');
+    console.info('[Comercial V2.4.6] Proteção Kanban capturando gestos no window. Diagnóstico: window.__COMERCIAL_KANBAN_DIAGNOSTICO__');
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
