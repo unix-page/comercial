@@ -22,8 +22,8 @@
   <article class="metric card"><span>Respondidas</span><strong id="metricConcluidas">0</strong></article>
   <article class="metric card"><span>Tempo acumulado concluído</span><strong id="metricTempo">0h 0min</strong></article>
 </section>
-<section class="card hidden" id="reportPanel"><div class="section-head"><div><h2>Relatório do período</h2><p class="muted">Clique em um comprador para filtrar todos os indicadores e as notas. Nenhuma nova leitura no Firebase.</p></div><button class="btn ghost" id="closeReports" type="button">Ocultar gráficos</button></div><div id="reportContent"></div></section>
-<section class="card table-card"><div class="section-head"><div><h2>Fila por nota fiscal</h2><p class="muted" id="dataInfo">Nenhum dado carregado.</p><p class="muted hidden" id="buyerActiveInfo"></p></div><div class="actions"><button class="btn outline" id="clearBuyer" type="button">Limpar comprador</button><button class="btn outline" id="reportsButton" type="button">Mostrar relatório</button></div></div>
+<section class="card hidden" id="reportPanel"><div class="section-head"><div><h2>Relatório do período</h2><p class="muted">Clique em um comprador para filtrar todos os indicadores e as notas. Nenhuma nova leitura no Firebase.</p></div><div class="actions"><button class="btn outline" id="clearReportFilters" type="button">Limpar filtros</button><button class="btn ghost" id="closeReports" type="button">Ocultar gráficos</button></div></div><div id="reportContent"></div></section>
+<section class="card table-card"><div class="section-head"><div><h2>Fila por nota fiscal</h2><p class="muted" id="dataInfo">Nenhum dado carregado.</p><p class="muted hidden" id="buyerActiveInfo"></p><p class="muted hidden" id="supplierActiveInfo"></p></div><div class="actions"><button class="btn outline" id="clearBuyer" type="button">Limpar comprador</button><button class="btn outline" id="reportsButton" type="button">Mostrar relatório</button></div></div>
   <div class="table-wrap"><table><thead><tr><th>Situação</th><th>NF / CNPJ</th><th>Fornecedor</th><th>Divergências</th><th>Setor(es)</th><th>Comprador(es)</th><th>Categoria</th><th>Última atualização</th><th>Histórico</th></tr></thead><tbody id="noteRows"><tr><td colspan="9">Clique em "Atualizar do Firebase" para consultar o período.</td></tr></tbody></table></div>
   <div class="pager"><button type="button" class="btn outline" id="prevPage">Anterior</button><span id="pageInfo">Página 0 de 0</span><button type="button" class="btn outline" id="nextPage">Próxima</button></div>
   <p class="help">Uma linha por chave de NF. As linhas e gráficos são calculados localmente. Mostramos no máximo 50 notas por página, mesmo que o período tenha milhares de notas.</p>
@@ -56,6 +56,16 @@
       <p class="help">Serão mostrados todos os compradores ativos. Se o comprador não estiver vinculado ao CNPJ, faça esse vínculo separadamente no cadastro do fornecedor para próximas notas.</p>
       <div class="manual-actions"><button class="btn outline" type="button" id="cancelBuyerCorrection">Cancelar</button><button class="btn primary" type="submit" id="saveBuyerCorrection">Confirmar comprador correto</button></div>
     </form>
+  </div>
+</div>
+<div class="nf-modal-backdrop hidden" id="supplierOverlay" role="presentation">
+  <div class="nf-modal card supplier-modal" role="dialog" aria-modal="true" aria-labelledby="supplierModalTitle" tabindex="-1">
+    <div class="section-head"><div><h2 id="supplierModalTitle">Consulta de fornecedores</h2><p class="muted" id="supplierModalCount">Ranking a partir dos dados salvos</p></div><button class="btn outline" type="button" id="closeSupplierModal">Fechar ✕</button></div>
+    <p class="supplier-modal-explain">Pesquise entre <strong>todos os fornecedores do recorte</strong>. Selecione <strong>Detalhes</strong> para ver tipos, compradores, categorias e notas; ou <strong>Filtrar painel</strong> para cruzar com os demais gráficos. Nenhuma consulta ao Firebase.</p>
+    <div class="supplier-modal-controls"><label class="supplier-modal-query">Pesquisar nome ou CNPJ<input id="supplierModalSearch" type="search" autocomplete="off" placeholder="Nome completo, abreviação ou CNPJ..."></label><label>Ordenar por<select id="supplierModalSort"><option value="divergencias">Mais divergências</option><option value="notas">Mais NFs distintas</option></select></label></div>
+    <div class="table-wrap supplier-modal-table"><table><thead><tr><th>Fornecedor / CNPJ</th><th>NFs</th><th>Divergências</th><th>Ações</th></tr></thead><tbody id="supplierModalRows"></tbody></table></div>
+    <div class="pager"><button type="button" class="btn outline" id="supplierPrev">Anterior</button><span id="supplierPageInfo">Página 0 de 0</span><button type="button" class="btn outline" id="supplierNext">Próxima</button></div>
+    <section id="supplierDetail" class="supplier-detail hidden" aria-label="Detalhamento do fornecedor"></section>
   </div>
 </div>
 <script type="module" src="./script.js"></script></body></html>

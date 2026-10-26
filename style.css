@@ -36,3 +36,51 @@
 .buyer-correction-modal{max-width:640px;max-height:90vh;overflow-y:auto}
 #buyerCorrectionOverlay{z-index:10015}
 .nf-div-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}
+
+
+/* Comercial V2.5.8 — Top 10 fornecedores, pesquisa e consulta completa. */
+.supplier-chart{min-height:340px}
+.supplier-chart-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.supplier-chart-head h3{margin:0}
+.supplier-count{font-size:10px;border-radius:99px;background:#fff1f8;color:#9c1551;padding:3px 8px;white-space:nowrap}
+.supplier-search-label{font-size:11px;color:var(--muted);font-weight:600;margin:0}
+#supplierQuickSearch{font-size:12px;padding:8px 10px;min-height:36px;margin-top:-6px}
+#supplierTopList{max-height:338px;min-height:60px}
+.supplier-chart .supplier-rank-row{grid-template-columns:minmax(140px,1.65fr) minmax(50px,1fr) 29px;gap:7px;min-height:49px}
+.supplier-rank-name{display:flex;flex-direction:column;align-items:stretch;gap:1px;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.supplier-rank-name b{font-size:11px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.supplier-rank-name small{font-weight:500;color:#778497;font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.supplier-chart-footer{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-top:auto}
+.supplier-chart-footer small{color:#758198;font-size:10px}
+.supplier-clear{color:#a51656;background:#fff1f8;border:1px solid #f6ccdf;border-radius:9px;padding:7px;text-align:left;font-weight:700;font-size:11px;white-space:normal}
+.supplier-clear:hover{background:#ffe3f0}
+#supplierOverlay{z-index:10001}
+.supplier-modal{width:min(1100px,96vw);max-height:92vh}
+.supplier-modal-explain{background:#fbf7fa;color:#596579;border:1px solid #f0e4ec;padding:12px 14px;border-radius:10px;margin:8px 0 14px}
+.supplier-modal-controls{display:grid;grid-template-columns:minmax(200px,1fr) minmax(185px,230px);gap:12px;margin-bottom:14px}
+.supplier-modal-controls label{font-size:12px}
+.supplier-modal-table{max-height:47vh!important;border:1px solid var(--line);border-radius:10px}
+.supplier-modal-table table{white-space:normal}
+.supplier-modal-table th:nth-child(2),.supplier-modal-table th:nth-child(3),.supplier-number{text-align:right}
+.supplier-modal-table td:first-child{min-width:240px;max-width:510px;overflow-wrap:anywhere}
+.supplier-full-name{font-size:12px}
+.supplier-cnpj{display:block;font-size:11px;color:#738094;margin-top:3px}
+.supplier-number{font-variant-numeric:tabular-nums}
+.supplier-table-actions{white-space:nowrap;text-align:right}
+.supplier-table-actions .btn{margin:1px 3px}
+.supplier-row-active td{background:#fff1f8}
+.supplier-detail{border:1px solid #efc7d9;background:#fffafc;border-radius:12px;padding:15px;margin-top:6px}
+.supplier-detail-heading{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.supplier-detail-heading strong{font-size:14px;display:block}
+.supplier-detail-heading small{display:block;color:#737e91;margin-top:2px}
+.supplier-detail-grids{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:15px}
+.supplier-detail-grids>div{border:1px solid #eee2e8;background:white;padding:12px;border-radius:9px;min-width:0}
+.supplier-detail-grids b{font-size:12px}
+.supplier-detail-grids ul{list-style:none;padding:0;margin:6px 0 0}
+.supplier-detail-grids li{display:flex;gap:8px;align-items:baseline;justify-content:space-between;font-size:11px;padding:5px 0;border-bottom:1px solid #f0edf2}
+.supplier-detail-grids li span{overflow-wrap:anywhere}
+.supplier-note-preview{margin-top:12px}
+.supplier-note-preview>div{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+@media(max-width:760px){.supplier-modal-controls{grid-template-columns:1fr}.supplier-detail-grids{grid-template-columns:1fr}.supplier-table-actions .btn{display:block;width:100%}.supplier-modal-table td:first-child{min-width:180px}}
+
+#supplierActiveInfo{color:#be185d;font-weight:700}

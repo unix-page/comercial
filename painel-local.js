@@ -68,3 +68,75 @@ export function noteTimeline(divs,events,passes,key,now=Date.now()) {
     calendarMs:Number.isFinite(first)&&Number.isFinite(last)&&last>=first?last-first:0,
     pendingMs:unionMs(ranges),sumMs:pp.filter(p=>p.fimEm).reduce((s,p)=>s+elapsed(p.inicioEm,p.fimEm),0)};
 }
+
+
+// V2.5.8 — agregação local de fornecedores: um CNPJ agrupa nomes divergentes.
+// Sem CNPJ: agrupa pelo nome; sem identificação: evita fundir notas distintas.
+export function supplierKey(d) {
+  const raw = String(d?.cnpj || '').replace(/\D/g, '');
+  const cnpj = raw.length === 14 ? raw : (String(d?.chave || '').replace(/\D/g, '').length === 44 ? String(d.chave).replace(/\D/g, '').slice(6,20) : '');
+  if (cnpj.length === 14) return `cnpj:${cnpj}`;
+  const name = norm(d?.fornecedorNome || '');
+  if (name) return `nome:${name}`;
+  return `sem-identificacao:${String(d?.chave || d?.id || '')}`;
+}
+export function supplierRanking(divs) {
+  const map = new Map();
+  for (const d of divs || []) {
+    const key = supplierKey(d);
+    let item = map.get(key);
+    if (!item) {
+      item = {key, cnpj:key.startsWith('cnpj:')?key.slice(5):'', nomes:new Map(), divergencias:0, noteKeys:new Set(), categories:new Set()};
+      map.set(key,item);
+    }
+    const name=String(d.fornecedorNome||'').trim();
+    if(name)item.nomes.set(name,(item.nomes.get(name)||0)+1);
+    if(d.chave)item.noteKeys.add(String(d.chave));
+    item.divergencias++;
+    item.categories.add(category(d));
+  }
+  return [...map.values()].map(x=>({
+    key:x.key,cnpj:x.cnpj,
+    name:[...x.nomes].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0],'pt-BR'))[0]?.[0] || 'Fornecedor não identificado',
+    divergencias:x.divergencias,notas:x.noteKeys.size
+  })).sort((a,b)=>b.divergencias-a.divergencias||b.notas-a.notas||a.name.localeCompare(b.name,'pt-BR'));
+}
+
+
+// V2.5.9 — ranking por abertura: uma ocorrência por documento de divergência.
+// A resposta encerra uma passagem, mas NÃO cria nova abertura neste indicador.
+// Agrupa pelo UID do autor para suportar mudanças futuras de nome; registros
+// antigos sem UID usam o nome normalizado, sem excluir divergências legadas.
+export function openerKey(d) {
+  const uid=String(d?.abertoPor||'').trim();
+  if (uid) return `uid:${uid}`;
+  const name=norm(d?.abertoPorNome||'');
+  return name ? `nome:${name}` : 'usuario:nao-informado';
+}
+export function openerRanking(divs) {
+  const groups=new Map(), seenIds=new Set();
+  for (const d of divs||[]) {
+    if (!d) continue;
+    // Uma divergência é um registro próprio, mesmo quando a NF tem várias.
+    // Eventuais documentos duplicados no pacote não contam outra abertura.
+    const docId=String(d.id||'').trim();
+    if (docId && seenIds.has(docId)) continue;
+    if (docId) seenIds.add(docId);
+    const key=openerKey(d);
+    let g=groups.get(key);
+    if (!g) {
+      g={key,names:new Map(),divergencias:0,notas:new Set()};
+      groups.set(key,g);
+    }
+    const name=String(d.abertoPorNome||'').trim();
+    if (name) g.names.set(name,(g.names.get(name)||0)+1);
+    g.divergencias++;
+    if (d.chave) g.notas.add(String(d.chave));
+  }
+  return [...groups.values()].map(g=>({
+    key:g.key,
+    name:[...g.names].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0],'pt-BR'))[0]?.[0]||'Não informado no registro',
+    divergencias:g.divergencias,
+    notas:g.notas.size
+  })).sort((a,b)=>b.divergencias-a.divergencias||a.name.localeCompare(b.name,'pt-BR'));
+}
