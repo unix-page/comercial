@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.4.6
+// @name         Comercial • Infradesk • Registro de divergências V2.4.7
 // @namespace    comercial/infradesk
-// @version      2.4.6
+// @version      2.4.7
 // @description  Uma NF por chave; somente verifica ao tentar sair da fila Em Análise Terceiro; sem Firebase, libera a movimentação.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
@@ -18,7 +18,7 @@
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.4.6';
+  window.__COMERCIAL_APP_VERSION__ = '2.4.7';
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
   const CONFIG = {
@@ -54,6 +54,7 @@
   const onlyDigits = s => String(s ?? '').replace(/\D/g, '');
   const trim = s => String(s ?? '').replace(/\s+/g, ' ').trim();
   const escape = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
+  const NEW_DIVERGENCE_VALUE = '__comercial_abrir_nova__';
   const sectors = { fiscal:'Fiscal (Sicofe)', comercial:'Comercial', cadastro:'Cadastro' };
   const TTL = 15 * 60 * 1000;
   const CARD_CACHE_TTL = 5 * 60 * 1000;
@@ -65,7 +66,7 @@
   const MOVE_SERVER_TIMEOUT_MS = 3200; // se o servidor não responder, libera (fail-open)
   const moveGate = { results: new Map(), pending: new Map(), gesture: null };
   const moveDebug = {
-    version:'2.4.6', windowCaptureActive:false, gestures:0, blocked:0,
+    version:'2.4.7', windowCaptureActive:false, gestures:0, blocked:0,
     checks:0, lastEvent:'', lastOutcome:'', lastNote:''
   };
   window.__COMERCIAL_KANBAN_DIAGNOSTICO__ = moveDebug;
@@ -75,7 +76,7 @@
     buyers: new Map(),
     card: null, data: null, supplier: null,
     divergences: [], selected: null, busy: false,
-    viewToken: 0, mode: 'abrir', autoDetails: '',
+    viewToken: 0, mode: 'escolher', autoDetails: '',
     allBuyers: { items: [], expiresAt: 0, promise: null }, supplierSaving: false
   };
 
@@ -654,6 +655,30 @@
       .cv-manage-field{display:grid;gap:5px;font-weight:700;font-size:12px}.cv-manage-field input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #d4dce9;border-radius:9px;font:13px system-ui}
       .cv-manage-list{max-height:270px;overflow:auto;padding:6px;border:1px solid #dbe3ee;border-radius:10px;display:grid;gap:1px}.cv-manage-choice{display:flex;align-items:center;gap:9px;padding:8px 10px;cursor:pointer;border-radius:7px;font-size:12px}.cv-manage-choice:hover{background:#fff1f7}.cv-manage-choice input{accent-color:#d91e74;width:16px;height:16px}
       .cv-manage-buttons{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+      /* V2.4.7: sessão compacta no cabeçalho; autenticação em janela dedicada. */
+      .cv-header-copy{min-width:0;flex:1}.cv-header-copy strong{display:block;line-height:1.25}
+      .cv-header-account{display:inline-flex;align-items:center;gap:6px;margin-top:5px;max-width:100%;font:600 11px system-ui;color:#92400e;overflow-wrap:anywhere}
+      .cv-header-account:before{content:'';width:7px;height:7px;border-radius:50%;background:#d97706;flex:0 0 7px}
+      .cv-header-account.is-on{color:#047857}.cv-header-account.is-on:before{background:#10b981}
+      .cv-header-account.is-warning{color:#b45309}.cv-header-account.is-warning:before{background:#f59e0b}
+      .cv-footer-account{margin-right:auto}.cv-auth-message{border:1px solid #dbeafe;border-radius:10px;background:#f8fbff;padding:12px 14px;color:#475569;font-size:12px;line-height:1.5}
+      .cv-auth-overlay{display:none;position:fixed;inset:0;z-index:2147483646;background:rgba(15,23,42,.78);align-items:center;justify-content:center;padding:14px;font:13px system-ui,Arial;color:#172033}
+      .cv-auth-overlay.open{display:flex}.cv-auth-window{width:min(480px,100%);max-height:92vh;overflow:auto;background:#fff;border-radius:16px;box-shadow:0 24px 80px #0007}
+      .cv-auth-head{display:flex;align-items:center;gap:11px;padding:20px 20px 16px;border-bottom:1px solid #e2e8f0}
+      .cv-auth-head img{width:39px;height:39px;border-radius:11px;flex:0 0 auto}.cv-auth-head strong{display:block;font-size:17px}.cv-auth-head small{color:#64748b;display:block;font-size:12px;margin-top:2px}.cv-auth-head .cv-button{margin-left:auto}
+      .cv-auth-body{padding:20px;display:grid;gap:14px}.cv-auth-body .cv-login-fields{display:grid;gap:12px}
+      .cv-auth-body label{display:grid;gap:5px;font-size:12px;font-weight:700;color:#334155}
+      .cv-auth-body input{box-sizing:border-box;width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:9px;background:#fff;color:#0f172a;font:13px system-ui}
+      .cv-auth-body input:focus{outline:2px solid #f9a8d4;outline-offset:1px;border-color:#db2777}
+      .cv-auth-intro{margin:0;color:#475569;font-size:12px;line-height:1.6}
+      .cv-auth-footer{display:grid;gap:9px;padding:14px 20px 20px;border-top:1px solid #e2e8f0;background:#f8fafc}
+      .cv-auth-footer .cv-button{width:100%;padding:11px 12px;font-size:13px}
+      .cv-auth-footer .cv-auth-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+      .cv-auth-footer .cv-google{display:inline-flex;align-items:center;justify-content:center;gap:7px;background:white}
+      .cv-auth-footer .cv-google-mark{font-weight:900;font-size:17px;color:#4285f4}
+      .cv-auth-footer .cv-recover{border:none;background:transparent;color:#9d174d;padding:6px 8px;font-size:12px}
+      .cv-auth-footer .cv-auth-cancel{color:#64748b;background:transparent}
+      @media(max-width:480px){.cv-header{padding:12px}.cv-header img{width:36px;height:36px}.cv-header strong{font-size:16px}.cv-auth-footer .cv-auth-actions{grid-template-columns:1fr}.cv-footer-account{margin-right:0}}
       .cv-description{font-size:11px;color:#66768c;font-weight:400}.cv-pill{display:inline-flex;padding:3px 8px;border-radius:30px;background:#fff0f6;color:#a51d62;font-size:11px;font-weight:700}.cv-hidden{display:none!important}
       .comercial-box{clear:both;margin:9px 0 10px;padding:0;border:1px solid rgba(217,30,116,.18);background:#fff;border-radius:12px;color:#172033;font-size:12px;line-height:1.35;overflow:hidden;box-shadow:0 10px 22px rgba(15,23,42,.10)}.comercial-box-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 9px;font-weight:900;color:#fff;background:linear-gradient(135deg,#d91e74,#fb7185)}.comercial-box-title{display:inline-flex;align-items:center;gap:6px;min-width:0}.comercial-box-title img{width:18px;height:18px;border-radius:5px;flex:0 0 auto}.comercial-chip{display:inline-flex;align-items:center;border-radius:999px;padding:2px 7px;font-size:10px;font-weight:900;background:rgba(255,255,255,.96);color:#be185d;border:1px solid rgba(255,255,255,.65);white-space:nowrap}.comercial-box-body{padding:8px 9px 9px;background:#f8fafc;border-left:4px solid #d91e74}.comercial-last-text{margin-top:3px;padding:6px 7px;border-radius:9px;background:#fff;border:1px solid #e2e8f0;color:#334155;overflow-wrap:anywhere;white-space:pre-wrap}.comercial-box small{color:#64748b;display:block;margin-top:5px}.comercial-box.comercial-status-em_crf .comercial-box-head{background:linear-gradient(135deg,#2563eb,#38bdf8)}.comercial-box.comercial-status-respondida .comercial-box-head{background:linear-gradient(135deg,#067647,#12b76a)}.comercial-box.comercial-status-concluida .comercial-box-head{background:linear-gradient(135deg,#067647,#12b76a)}.comercial-box.comercial-status-devolucao .comercial-box-head{background:linear-gradient(135deg,#b42318,#ef4444)}
       .chamado-item[data-comercial-status='aberta']{border-left:4px solid #d91e74!important}.chamado-item[data-comercial-status='em_crf']{border-left:4px solid #2563eb!important}.chamado-item[data-comercial-status='respondida']{border-left:4px solid #12b76a!important}.chamado-item[data-comercial-status='concluida']{border-left:4px solid #12b76a!important}.chamado-item[data-comercial-status='devolucao']{border-left:4px solid #ef4444!important}@media(max-width:620px){.cv-grid{grid-template-columns:1fr}}
@@ -662,21 +687,14 @@
     const modal = document.createElement('div');
     modal.id = 'comercial-v2-modal'; modal.className = 'cv-backdrop';
     modal.innerHTML = `<div class="cv-window" role="dialog" aria-modal="true" aria-label="Comercial V2">
-      <div class="cv-header"><img src="${ICON}" alt=""><div><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.4.4</span></small></div><button class="cv-button" id="cv-close" type="button">✕</button></div>
+      <div class="cv-header"><img src="${ICON}" alt=""><div class="cv-header-copy"><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.4.7</span></small><div id="cv-session-text" class="cv-header-account" aria-live="polite">Verificando login...</div></div><button class="cv-button" id="cv-close" type="button" aria-label="Fechar Comercial">✕</button></div>
       <div class="cv-content">
         <div class="cv-info" id="cv-info"></div>
         <a id="cv-history-link" class="cv-button" style="text-align:center;display:block;text-decoration:none" target="_blank" rel="noopener noreferrer" href="https://unix-page.github.io/comercial/">Ver linha do tempo completa desta NF ↗</a>
         <div class="cv-manage-toolbar"><button type="button" class="cv-button" id="cv-manage-buyers">Vincular compradores ao CNPJ</button><span id="cv-supplier-hint" class="cv-hint">Carregando fornecedor...</span></div>
-        <div class="cv-session"><div id="cv-session-text">Verificando login do Comercial...</div><button type="button" class="cv-button cv-hidden" id="cv-logout">Sair / trocar conta</button></div>
-        <div id="cv-login-entry" class="cv-login-entry cv-hidden"><button type="button" id="cv-login-toggle" class="cv-button primary">Entrar no Comercial</button><span>Login independente do Infradesk e do Xabuia.</span></div>
-        <div id="cv-login" class="cv-login cv-hidden">
-          <strong id="cv-login-status">Entre com a conta do Comercial</strong>
-          <div id="cv-login-fields"></div>
-          <div><button class="cv-button primary" id="cv-email-login" type="button">Entrar com e-mail</button> <button class="cv-button" id="cv-google-login" type="button">Entrar com Google</button> <button class="cv-button" id="cv-reset-password" type="button">Definir/recuperar senha</button></div>
-          <span class="cv-login-help">Informe as credenciais do <b>Comercial</b>, não as do Infradesk. Os campos só aparecem quando você abre o login para evitar preenchimento automático de outra conta.</span>
-        </div>
+        <div id="cv-auth-prompt" class="cv-auth-message cv-hidden">Para abrir ou responder divergências, entre na sua conta Comercial pelo botão <b>Entrar no Comercial</b> no rodapé.</div>
         <div id="cv-form" class="cv-hidden" style="display:grid;gap:12px">
-          <label>Divergência da nota<select id="cv-div"><option value="">+ Nova divergência</option></select></label>
+          <label>Divergência da nota<select id="cv-div"><option value="">Selecione o que deseja fazer...</option></select></label>
           <div id="cv-current" class="cv-card cv-hidden"></div>
           <div class="cv-grid" id="cv-target"><label>Setor responsável<select id="cv-sector"><option value="">Selecione</option><option value="comercial">Comercial</option><option value="fiscal">Fiscal (Sicofe)</option><option value="cadastro">Cadastro</option></select></label><label id="cv-type-wrap">Tipo de divergência<select id="cv-type"><option value="">Selecione</option></select></label></div>
           <label id="cv-buyer-wrap">Comprador responsável<select id="cv-buyer"><option value="">Selecione</option></select></label>
@@ -685,9 +703,20 @@
           <p class="cv-hint" id="cv-hint">Registrar no Comercial não altera o chamado original do Infradesk.</p>
         </div>
       </div>
-      <div class="cv-buttons"><button type="button" class="cv-button" id="cv-refresh">Atualizar dados desta nota</button><button type="button" class="cv-button" id="cv-cancel">Cancelar</button><button type="button" class="cv-button primary" id="cv-save">Salvar ocorrência</button></div>
+      <div class="cv-buttons"><button type="button" class="cv-button cv-footer-account cv-hidden" id="cv-login-toggle">Entrar no Comercial</button><button type="button" class="cv-button cv-footer-account cv-hidden" id="cv-logout">Sair / trocar conta</button><button type="button" class="cv-button" id="cv-refresh">Atualizar dados desta nota</button><button type="button" class="cv-button" id="cv-cancel">Cancelar</button><button type="button" class="cv-button primary cv-hidden" id="cv-save" disabled>Salvar ocorrência</button></div>
     </div>`;
     document.body.appendChild(modal);
+    const loginOverlay=document.createElement('div');
+    loginOverlay.id='cv-auth-overlay';loginOverlay.className='cv-auth-overlay';
+    loginOverlay.innerHTML=`<div class="cv-auth-window" role="dialog" aria-modal="true" aria-labelledby="cv-auth-title">
+      <div class="cv-auth-head"><img src="${ICON}" alt=""><div><strong id="cv-auth-title">Entrar no Comercial</strong><small>Acesso independente do Infradesk</small></div><button type="button" class="cv-button" id="cv-auth-close" aria-label="Fechar janela de login">✕</button></div>
+      <div class="cv-auth-body"><p class="cv-auth-intro" id="cv-login-status">Entre com a conta utilizada no Comercial para registrar ou responder divergências.</p><div id="cv-login-fields" class="cv-login-fields"></div><span class="cv-login-help">Use as credenciais do <b>Comercial</b>, não as do Infradesk. Por segurança, digite o e-mail e a senha nesta janela.</span></div>
+      <div class="cv-auth-footer"><div class="cv-auth-actions"><button class="cv-button primary" id="cv-email-login" type="button">Entrar com e-mail</button><button class="cv-button cv-google" id="cv-google-login" type="button"><span class="cv-google-mark">G</span> Entrar com Google</button></div><button class="cv-button cv-recover" id="cv-reset-password" type="button">Definir / recuperar minha senha</button><button type="button" class="cv-button cv-auth-cancel" id="cv-auth-cancel">Voltar ao chamado</button></div>
+    </div>`;
+    document.body.appendChild(loginOverlay);
+    $('#cv-auth-close').onclick=clearLoginFields;
+    $('#cv-auth-cancel').onclick=clearLoginFields;
+    // Não fechar com clique fora. Fechamento apenas pelos botões explícitos.
     const manage=document.createElement('div');
     manage.id='cv-manage-overlay';manage.className='cv-manage-overlay';
     manage.innerHTML=`<div class="cv-manage-window" role="dialog" aria-modal="true" aria-label="Compradores do fornecedor">
@@ -730,13 +759,14 @@
         state.user = null; state.profile = null; state.profileAt = 0;
         state.catalog.expiresAt = 0; state.buyers.clear();
         await loadForm();
+        toggleLoginPanel();
         alertUser('Sessão do Comercial encerrada. Escolha como entrar.');
       } catch (e) { alertUser('Não consegui sair: ' + (e.message || 'erro desconhecido'), true); }
       finally { button.disabled = false; }
     };
   }
   function clearLoginFields() {
-    $('#cv-login')?.classList.add('cv-hidden');
+    $('#cv-auth-overlay')?.classList.remove('open');
     $('#cv-login-fields')?.replaceChildren(); // Senha não permanece no DOM.
   }
   function mountLoginFields() {
@@ -765,11 +795,12 @@
     });
   }
   function toggleLoginPanel() {
-    const panel=$('#cv-login');
-    if (!panel) return;
-    if (!panel.classList.contains('cv-hidden')) { clearLoginFields(); return; }
+    const overlay=$('#cv-auth-overlay');
+    if (!overlay) return;
+    if (overlay.classList.contains('open')) return;
     mountLoginFields();
-    panel.classList.remove('cv-hidden');
+    $('#cv-login-status').textContent = 'Acesse sua conta do Comercial para registrar ou responder divergências nesta nota.';
+    overlay.classList.add('open');
   }
   function emailError(e) {
     const messages={
@@ -855,12 +886,13 @@
     clearLoginFields();
     state.card = null; state.data = null; state.selected = null; state.viewToken++;
     $('#cv-manage-overlay')?.classList.remove('open');
+    $('#cv-auth-overlay')?.classList.remove('open');
   }
   async function openCard(card) {
     const data = extract(card);
     if (!data) { alertUser('Chave de NF-e ausente ou inválida. Confira os 44 dígitos.',true); return; }
     const token = ++state.viewToken;
-    state.card = card; state.data = data; state.selected = null; state.autoDetails = '';
+    state.card = card; state.data = data; state.selected = null; state.autoDetails = ''; state.mode = 'escolher';
     $('#cv-info').innerHTML = `<div><b>Chave:</b> ${escape(data.chave)}</div>
       <div><b>NF:</b> ${escape(data.numeroNf)} • <b>CNPJ:</b> ${escape(data.cnpj)}</div>
       <div><b>Infradesk:</b> ${escape(data.chamadoInfradeskId||'—')} • ${escape(data.statusInfradesk||'—')}</div>
@@ -872,6 +904,7 @@
     $('#comercial-v2-modal').classList.add('open');
     $('#cv-form').classList.add('cv-hidden');
     $('#cv-save').disabled = true;
+    $('#cv-save').classList.add('cv-hidden');
     renderSession();
     try {
       await loadProfile();
@@ -883,46 +916,61 @@
     const user = state.user || auth.currentUser;
     const profile = state.profile;
     const line = $('#cv-session-text');
-    const bar = line?.closest?.('.cv-session');
     if (!line) return;
+    const logged = !!user;
+    const allowed = canRecord();
+    line.classList.toggle('is-on', allowed);
+    line.classList.toggle('is-warning', logged && !allowed);
+    const login = $('#cv-login-toggle');
     const logout = $('#cv-logout');
-    logout?.classList.toggle('cv-hidden', !user);
-    if (!user) {
-      bar?.classList.remove('ok');
-      line.textContent = 'Entre com Google ou e-mail/senha do Comercial.';
+    login?.classList.toggle('cv-hidden', logged);
+    logout?.classList.toggle('cv-hidden', !logged);
+    if (!logged) {
+      line.textContent = 'Não conectado ao Comercial';
+      line.title = 'Entre com Google ou e-mail/senha do Comercial';
       return;
     }
     const nome = trim(profile?.nome || user.displayName || user.email || 'Usuário');
-    const email = trim(user.email || '');
     const papel = trim(profile?.papel || 'sem perfil');
-    bar?.classList.toggle('ok', Boolean(profile && profile.ativo !== false));
-    line.replaceChildren();
-    const strong = document.createElement('b');
-    strong.textContent = 'Salvando como ' + nome;
-    const small = document.createElement('small');
-    small.textContent = email ? `${email} • Perfil: ${papel}` : `Perfil: ${papel}`;
-    line.append(strong, small);
+    line.textContent = allowed ? `Conectado: ${nome} • ${papel}`
+      : `Conectado: ${nome} • ${!profile ? 'sem cadastro de perfil' : profile.ativo === false ? 'conta inativa' : 'perfil sem permissão'}`;
+    line.title = `${nome}${user.email ? '\n' + user.email : ''}\nPerfil: ${papel}`;
   }
   async function loadForm() {
     const allowed = canRecord();
     renderSession();
     updateManageSummary();
-    $('#cv-login-entry').classList.toggle('cv-hidden', !!(state.user && state.profile && state.profile.ativo !== false));
     if (state.user) clearLoginFields();
-    $('#cv-form').classList.toggle('cv-hidden',!allowed);
-    $('#cv-save').disabled = !allowed;
-    $('#cv-login-status').textContent = !state.user ? 'Entre no Comercial' : !state.profile ? 'Conta conectada sem perfil em usuarios. Use Sair / trocar conta para escolher outra.' : state.profile.ativo === false ? 'Conta inativa' : 'Este perfil não pode registrar eventos';
-    if (!allowed) return;
+    const prompt=$('#cv-auth-prompt');
+    prompt.classList.toggle('cv-hidden', allowed);
+    if (!allowed) {
+      prompt.textContent = !state.user
+        ? 'Para abrir ou responder divergências, entre no Comercial pelo botão no rodapé.'
+        : !state.profile
+          ? 'Esta conta está conectada, mas não possui perfil cadastrado no Comercial. Use Sair / trocar conta no rodapé.'
+          : state.profile.ativo === false
+            ? 'Sua conta Comercial está inativa. Não é possível registrar ou responder divergências.'
+            : 'Seu perfil não possui permissão para registrar ou responder divergências.';
+      $('#cv-form').classList.add('cv-hidden');
+      $('#cv-save').disabled = true;
+      $('#cv-save').classList.add('cv-hidden');
+      return;
+    }
+    $('#cv-form').classList.remove('cv-hidden');
+    $('#cv-save').disabled = true;
+    $('#cv-save').classList.add('cv-hidden');
     await Promise.all([loadCatalog(),loadNote()]);
     const summary = summarizeDivergences(state.divergences, state.data?.chave);
     rememberCardSummary(state.data?.chave, summary);
     renderCardBox(state.card, summary);
     const dropdown=$('#cv-div');
-    dropdown.replaceChildren(new Option('+ Abrir nova divergência',''));
+    dropdown.replaceChildren(new Option('Selecione o que deseja fazer...',''));
+    dropdown.add(new Option('+ Abrir nova divergência',NEW_DIVERGENCE_VALUE));
     for (const d of state.divergences) {
       const label = `${d.tipoNome||'Divergência'} • ${statusTitle(d)} • ${d.compradorNome||sectors[d.setor]||'—'}`;
       dropdown.add(new Option(label,d.id));
     }
+    dropdown.value=''; // Exige decisão explícita mesmo com divergências abertas.
     renderSelected();
   }
   function renderSelected() {
@@ -944,19 +992,19 @@
   }
   function renderMode() {
     const d = state.selected;
-    // Sem menu Próxima ação: divergência nova abre; divergência aberta recebe
-    // resposta; divergência já respondida é apenas leitura.
+    const choice=$('#cv-div').value;
+    const waiting = choice === '';
     const closed = Boolean(d && !d.passagemAbertaId);
-    const mode = state.mode = !d ? 'abrir' : closed ? 'visualizar' : 'responder';
+    const mode = state.mode = waiting ? 'escolher' : choice === NEW_DIVERGENCE_VALUE ? 'abrir' : closed ? 'visualizar' : d ? 'responder' : 'escolher';
     const opening = mode === 'abrir';
     const responding = mode === 'responder';
     $('#cv-target').classList.toggle('cv-hidden',!opening);
     $('#cv-type-wrap').classList.toggle('cv-hidden',!opening);
     $('#cv-response-wrap').classList.toggle('cv-hidden',!responding);
     $('#cv-buyer-wrap').classList.toggle('cv-hidden',!opening);
-    $('#cv-details-wrap').classList.toggle('cv-hidden',closed);
-    $('#cv-save').classList.toggle('cv-hidden',closed);
-    $('#cv-save').disabled = closed || !canRecord();
+    $('#cv-details-wrap').classList.toggle('cv-hidden',!opening && !responding);
+    $('#cv-save').classList.toggle('cv-hidden',!opening && !responding);
+    $('#cv-save').disabled = (!opening && !responding) || !canRecord();
     $('#cv-save').textContent = opening ? 'Abrir divergência' : 'Registrar resposta';
     $('#cv-text').required = false;
     $('#cv-details-title').textContent = 'Observação / detalhes (opcional)';
@@ -964,11 +1012,13 @@
     $('#cv-description-preview').textContent = '';
     if (opening) { renderTypes(); renderBuyers(); fillTypeDescription(); }
     if (responding) renderResponses();
-    $('#cv-hint').textContent = closed
-      ? 'Esta divergência já foi respondida; o relógio está encerrado. Para outro problema, use “+ Abrir nova divergência”. O histórico está disponível no painel Comercial.'
-      : responding
-        ? 'Selecione qualquer resposta ativa deste setor. Salvar encerra a ocorrência e para o relógio, independentemente do nome da resposta.'
-        : 'Abrir a divergência inicia a contagem do setor. O Comercial não altera o chamado original no Infradesk.';
+    $('#cv-hint').textContent = waiting
+      ? 'Escolha uma opção acima: abrir uma nova divergência ou selecionar uma existente para responder. Nenhuma ação está selecionada automaticamente.'
+      : closed
+        ? 'Esta divergência já foi respondida e está apenas para consulta. Para registrar outro problema, escolha “+ Abrir nova divergência”.'
+        : responding
+          ? 'Selecione a resposta deste setor. Registrar resposta encerra a passagem e para o relógio.'
+          : 'Abrir a divergência inicia a contagem do setor. O Comercial não altera o chamado original no Infradesk.';
     if (responding && $('#cv-response').options.length <= 1) {
       $('#cv-hint').textContent = 'Nenhuma resposta ativa deste setor foi encontrada em respostas_v2. Cadastre a resposta no admin.html para encerrar o relógio.';
     }
@@ -1040,7 +1090,7 @@
     if (state.busy || !canRecord() || !state.data) return;
     const action=state.mode, old=state.selected, data=state.data;
     if (!['abrir','responder'].includes(action)) {
-      return alertUser('Esta ocorrência já foi respondida. Para outro problema, abra uma nova divergência.',true);
+      return alertUser(action === 'escolher' ? 'Primeiro selecione uma divergência existente ou a opção de abrir nova.' : 'Esta ocorrência já foi respondida. Para outro problema, abra uma nova divergência.',true);
     }
     const sector=$('#cv-sector').value, typeId=$('#cv-type').value;
     const buyerId=$('#cv-buyer').value, responseId=$('#cv-response').value;
@@ -1049,8 +1099,8 @@
     const type=state.catalog.types.find(x=>x.id===typeId);
     const buyer=state.buyers.get(buyerId)?.value || null;
     const response=state.catalog.responses.find(x=>x.id===responseId);
-    if (opening && old) return alertUser('Selecione “+ Abrir nova divergência”.',true);
-    if (!opening && (!old || !old.passagemAbertaId)) return alertUser('Esta divergência não tem relógio aberto. Atualize os dados.',true);
+    if (opening && ($('#cv-div').value !== NEW_DIVERGENCE_VALUE || old)) return alertUser('Selecione “+ Abrir nova divergência”.',true);
+    if (!opening && (!old || $('#cv-div').value !== old.id || !old.passagemAbertaId)) return alertUser('Esta divergência não tem relógio aberto. Atualize os dados.',true);
     if (opening && (!type || type.ativo===false || type.setor!==sector)) return alertUser('Escolha um tipo de divergência ativo deste setor.',true);
     if (opening && !sectors[sector]) return alertUser('Escolha o setor responsável.',true);
     if (opening && (!buyer || buyer.ativo===false || !(state.supplier?.compradorIds||[]).includes(buyerId))) {
@@ -1164,11 +1214,11 @@
       alertUser(opening?'Divergência aberta. O relógio iniciou.':'Resposta registrada. Divergência respondida; relógio encerrado.');
       close(true);
     } catch(e) {
-      console.error('[Comercial V2.4.6] Erro ao salvar:',e);
+      console.error('[Comercial V2.4.7] Erro ao salvar:',e);
       alertUser(e?.code==='permission-denied'?'Acesso negado. Verifique as regras do Firestore.':(e.message||'Falha ao salvar'),true);
     } finally {
       state.busy=false;
-      $('#cv-save').disabled=!canRecord();
+      $('#cv-save').disabled=!canRecord() || !['abrir','responder'].includes(state.mode);
       $('#cv-save').textContent=state.mode==='abrir'?'Abrir divergência':'Registrar resposta';
     }
   }
@@ -1215,7 +1265,7 @@
     scan();
     observer.observe(document.body,{childList:true,subtree:true});
     installKanbanProtection();
-    console.info('[Comercial V2.4.6] Proteção Kanban capturando gestos no window. Diagnóstico: window.__COMERCIAL_KANBAN_DIAGNOSTICO__');
+    console.info('[Comercial V2.4.7] Proteção Kanban capturando gestos no window. Diagnóstico: window.__COMERCIAL_KANBAN_DIAGNOSTICO__');
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
