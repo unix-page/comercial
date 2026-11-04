@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.5.7 TESTE (KANBAN + SIGMA)
+// @name         Comercial • Infradesk • Registro de divergências V2.5.8 TESTE (KANBAN + SIGMA)
 // @namespace    comercial/infradesk
-// @version      2.5.7
+// @version      2.5.8
 // @description  Piloto: mesmas ocorrências no Kanban e na grade SIGMA; abertura do Comercial diretamente pela tabela; validação da fila 6.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
@@ -54,11 +54,11 @@
     },{capture:true,passive:false});
     window.addEventListener('mousemove',moving,{capture:true,passive:false});
     window.addEventListener('mouseup',()=>{origin=null;},{capture:true});
-    console.error('[Comercial V2.5.7] Firebase compat ausente: saída da fila 6 bloqueada até corrigir o loader.');
+    console.error('[Comercial V2.5.8] Firebase compat ausente: saída da fila 6 bloqueada até corrigir o loader.');
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.5.7';
+  window.__COMERCIAL_APP_VERSION__ = '2.5.8';
   window.__COMERCIAL_TEST_BUILD__ = true;
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
@@ -110,7 +110,7 @@
   const MOVE_SERVER_TIMEOUT_MS = 8000;
   const moveGate = { results: new Map(), pending: new Map(), gesture: null, startDenied: null };
   const moveDebug = {
-    version:'2.5.7', windowCaptureActive:false, gestures:0, blocked:0,
+    version:'2.5.8', windowCaptureActive:false, gestures:0, blocked:0,
     checks:0, dragStartDenied:0, lastEvent:'', lastOutcome:'', lastNote:''
   };
   window.__COMERCIAL_KANBAN_DIAGNOSTICO__ = moveDebug;
@@ -600,7 +600,7 @@
     lastNotice:'', lastNoticeAt:0
   };
   const sigmaDebug = {
-    version:'2.5.7', gradeDetected:false, selected:0, inThird:0,
+    version:'2.5.8', gradeDetected:false, selected:0, inThird:0,
     batchState:'livre', blocked:0, lastEvent:'', lastMessage:''
   };
   window.__COMERCIAL_SIGMA_DIAGNOSTICO__ = sigmaDebug;
@@ -922,11 +922,11 @@
   }
   // API pública pequena para a extensão SIGMA também poder chamar diretamente.
   window.__COMERCIAL_SIGMA_BRIDGE__={
-    version:'2.5.7',
-    isReady:()=>Boolean(window.__COMERCIAL_TEST_BUILD__ && $('#comercial-v2-modal')),
+    version:'2.5.8',
+    isReady:()=>Boolean(window.__COMERCIAL_APP_RUNNING__ && $('#comercial-v2-modal')),
     openChamado:sigmaOpenChamado,
     abrir:sigmaOpenChamado,
-    diagnostico:()=>({...sigmaDebug,app:window.__COMERCIAL_APP_VERSION__,modal:!!$('#comercial-v2-modal')})
+    diagnostico:()=>({...sigmaDebug,app:window.__COMERCIAL_APP_VERSION__,modal:!!$('#comercial-v2-modal'),modalAberto:!!$('#comercial-v2-modal')?.classList.contains('open'),modalDisplay:$('#comercial-v2-modal')?getComputedStyle($('#comercial-v2-modal')).display:'ausente'})
   };
   // SIGMA pode instalar seu próprio handler de click ANTES do nosso.
   // A captura de pointerup é alternativa para o clique físico que um handler
@@ -1095,7 +1095,7 @@
     window.addEventListener('click',sigmaHandleClick,{capture:true});
     window.addEventListener('keydown',sigmaHandleKeydown,{capture:true});
     // A extensão SIGMA redesenha linhas/menus dinamicamente; scan() acompanha.
-    console.info('[Comercial V2.5.7] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
+    console.info('[Comercial V2.5.8] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
   }
 
   function timeString(ts) {
@@ -1303,7 +1303,7 @@
       .comercial-v2-button:hover{background:#ffd7e7!important;border-color:#d91e74!important}.comercial-v2-button img{width:18px!important;height:18px!important;display:block!important;border-radius:4px!important}
       .chamado-item[data-comercial-status='aberta'] .comercial-box-head::after{content:'🔒';margin-left:4px;font-size:12px}
       .cv-backdrop{display:none;position:fixed;inset:0;z-index:2147483644;background:#111827a6;align-items:center;justify-content:center;padding:12px;font:13px system-ui,Arial;color:#18243a}
-      .cv-backdrop.open{display:flex}.cv-window{background:#fff;width:min(710px,100%);max-height:94vh;overflow:auto;border-radius:15px;box-shadow:0 22px 70px #0006}
+      #comercial-v2-modal.cv-backdrop.open{display:flex!important;visibility:visible!important;opacity:1!important}.cv-window{background:#fff;width:min(710px,100%);max-height:94vh;overflow:auto;border-radius:15px;box-shadow:0 22px 70px #0006}
       .cv-header{display:flex;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid #e5e7eb}.cv-header img{width:42px;height:42px;border-radius:12px}.cv-header strong{font-size:18px}.cv-header small{display:block;color:#687386}.cv-header button{margin-left:auto}
       .cv-content{display:grid;gap:12px;padding:18px}.cv-info{border:1px solid #dbeafe;background:#eff6ff;color:#1e3a8a;padding:10px 12px;border-radius:12px;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
       .cv-content label{display:grid;gap:5px;font-size:12px;font-weight:700}.cv-content select,.cv-content input,.cv-content textarea{box-sizing:border-box;width:100%;padding:9px 10px;color:#162238;background:white;border:1px solid #d4dce9;border-radius:8px;font:13px system-ui}
@@ -1352,7 +1352,7 @@
     const modal = document.createElement('div');
     modal.id = 'comercial-v2-modal'; modal.className = 'cv-backdrop';
     modal.innerHTML = `<div class="cv-window" role="dialog" aria-modal="true" aria-label="Comercial V2">
-      <div class="cv-header"><img src="${ICON}" alt=""><div class="cv-header-copy"><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.5.7 TESTE</span></small><div id="cv-session-text" class="cv-header-account" aria-live="polite">Verificando login...</div></div><button class="cv-button" id="cv-close" type="button" aria-label="Fechar Comercial">✕</button></div>
+      <div class="cv-header"><img src="${ICON}" alt=""><div class="cv-header-copy"><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.5.8 TESTE</span></small><div id="cv-session-text" class="cv-header-account" aria-live="polite">Verificando login...</div></div><button class="cv-button" id="cv-close" type="button" aria-label="Fechar Comercial">✕</button></div>
       <div class="cv-content">
         <div class="cv-info" id="cv-info"></div>
         <a id="cv-history-link" class="cv-button" style="text-align:center;display:block;text-decoration:none" target="_blank" rel="noopener noreferrer" href="https://unix-page.github.io/comercial/">Ver linha do tempo completa desta NF ↗</a>
@@ -1545,9 +1545,34 @@
     };
     return messages[e?.code] || e?.message || 'Não foi possível entrar com Google.';
   }
+  // V2.5.8: compatibilidade com a grade SIGMA. O modal já recebia a
+  // classe open, mas o CSS da página podia manter display:none. Uma regra
+  // inline com !important, aplicada APENAS na abertura, tem precedência sobre
+  // as folhas de estilo da grade. Na saída restauramos o estilo anterior.
+  function setComercialModalVisible(visible) {
+    const modal=$('#comercial-v2-modal');
+    if (!modal) return false;
+    if (visible) {
+      // Evita que um painel/pai oculto esconda a janela.
+      if (modal.parentElement!==document.body) document.body.appendChild(modal);
+      modal.classList.add('open');
+      modal.style.setProperty('display','flex','important');
+      modal.style.setProperty('visibility','visible','important');
+      modal.style.setProperty('opacity','1','important');
+      modal.style.setProperty('pointer-events','auto','important');
+      modal.style.setProperty('position','fixed','important');
+      modal.style.setProperty('z-index','2147483644','important');
+    } else {
+      modal.classList.remove('open');
+      for (const property of ['display','visibility','opacity','pointer-events','position','z-index']) {
+        modal.style.removeProperty(property);
+      }
+    }
+    return true;
+  }
   function close(force = false) {
     if (state.busy && force !== true) return;
-    $('#comercial-v2-modal')?.classList.remove('open');
+    setComercialModalVisible(false);
     clearLoginFields();
     state.card = null; state.data = null; state.selected = null; state.viewToken++;
     $('#cv-manage-overlay')?.classList.remove('open');
@@ -1572,7 +1597,7 @@
     fillCardInfo(data);
     $('#cv-text').value = '';
     $('#cv-history-link').href = 'https://unix-page.github.io/comercial/?nf=' + encodeURIComponent(data.chave);
-    $('#comercial-v2-modal').classList.add('open');
+    setComercialModalVisible(true);
     $('#cv-form').classList.add('cv-hidden');
     $('#cv-save').disabled = true;
     $('#cv-save').classList.add('cv-hidden');
@@ -1941,7 +1966,7 @@
     observer.observe(document.body,{childList:true,subtree:true});
     installKanbanProtection();
     installSigmaProtection();
-    console.info('[Comercial V2.5.7] Teste carregado. Modal:',!!$('#comercial-v2-modal'),'• SIGMA:', !!$('#sigma-corpo-tabela'),'• Ponte:', window.__COMERCIAL_SIGMA_BRIDGE__?.isReady());
+    console.info('[Comercial V2.5.8] Teste carregado. Modal:',!!$('#comercial-v2-modal'),'• SIGMA:', !!$('#sigma-corpo-tabela'),'• Ponte:', window.__COMERCIAL_SIGMA_BRIDGE__?.isReady());
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
