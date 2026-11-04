@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.5.1 TESTE
+// @name         Comercial • Infradesk • Registro de divergências V2.5.2 TESTE (SIGMA)
 // @namespace    comercial/infradesk
-// @version      2.5.1
-// @description  Piloto: trava saída do Kanban e status na grade SIGMA (individual/lote) para a fila 6; outras filas livres.
+// @version      2.5.2
+// @description  Piloto: mesmas ocorrências no Kanban e na grade SIGMA; abertura do Comercial diretamente pela tabela; validação da fila 6.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
 // @noframes
@@ -43,7 +43,8 @@
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.5.1';
+  window.__COMERCIAL_APP_VERSION__ = '2.5.2';
+  window.__COMERCIAL_TEST_BUILD__ = true;
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
   const CONFIG = {
@@ -93,7 +94,7 @@
   const MOVE_SERVER_TIMEOUT_MS = 8000;
   const moveGate = { results: new Map(), pending: new Map(), gesture: null };
   const moveDebug = {
-    version:'2.5.1', windowCaptureActive:false, gestures:0, blocked:0,
+    version:'2.5.2', windowCaptureActive:false, gestures:0, blocked:0,
     checks:0, lastEvent:'', lastOutcome:'', lastNote:''
   };
   window.__COMERCIAL_KANBAN_DIAGNOSTICO__ = moveDebug;
@@ -222,6 +223,27 @@
     return { chave: s, cnpj: s.slice(6,20), numeroNf: String(Number(s.slice(25,34))), serie: s.slice(22,25) };
   }
   function extract(card) {
+    // Grade SIGMA: cada chamado é uma TR, e não um LI .chamado-item.
+    // Os campos seguem exatamente o HTML da tabela que recebemos.
+    if (card?.matches?.('#sigma-corpo-tabela tr[data-sigma-chamado-id]')) {
+      const info=sigmaRowInfo(card);
+      const parsed=parseKey(info?.key || '');
+      if (!parsed) return null;
+      const fornecedorNome=trim($('.sigma-fornecedor',card)?.textContent || 'Fornecedor não identificado');
+      const tipo=trim($('.sigma-tipo strong',card)?.textContent || '');
+      const status=trim($('.sigma-status-badge',card)?.textContent || '');
+      return {
+        ...parsed,
+        chamadoInfradeskId: info.id,
+        fornecedorNome,
+        fornecedorTexto: fornecedorNome,
+        fornecedorId: '',
+        empresa: '', // A grade apresentada não informa a unidade.
+        categoriaNota: tipo,
+        statusInfradesk: status,
+        descricaoInfradesk: ''
+      };
+    }
     const text = card.innerText || card.textContent || '';
     const match = text.match(/\b\d{44}\b/) || text.match(/(?:\d[\s.\-]*){44}/);
     const parsed = parseKey(match?.[0]);
@@ -472,7 +494,7 @@
     lastNotice:'', lastNoticeAt:0
   };
   const sigmaDebug = {
-    version:'2.5.1', gradeDetected:false, selected:0, inThird:0,
+    version:'2.5.2', gradeDetected:false, selected:0, inThird:0,
     batchState:'livre', blocked:0, lastEvent:'', lastMessage:''
   };
   window.__COMERCIAL_SIGMA_DIAGNOSTICO__ = sigmaDebug;
@@ -726,9 +748,42 @@
       void sigmaVerifyBatch();
     }
   }
+  // Ponte SIGMA -> modal Comercial já existente no Kanban. Sem outro login,
+  // sem duplicar o modal e sem depender de API interna da extensão SIGMA.
+  function sigmaOpenChamado(input) {
+    const row=input instanceof Element
+      ? (input.matches('#sigma-corpo-tabela tr[data-sigma-chamado-id]') ? input : input.closest('#sigma-corpo-tabela tr[data-sigma-chamado-id]'))
+      : sigmaRowById(String(input ?? ''));
+    if (!row) {
+      moveNotice('Comercial: chamado não encontrado na grade SIGMA. Atualize a tabela.',true);
+      return false;
+    }
+    if (!extract(row)) {
+      moveNotice('Comercial: esta nota não possui uma chave de acesso válida de 44 dígitos.',true);
+      return false;
+    }
+    sigmaDebug.lastEvent='abrir Comercial / grade SIGMA';
+    sigmaDebug.lastOpened=row.getAttribute('data-sigma-chamado-id')||'';
+    void openCard(row);
+    return true;
+  }
+  // API pública pequena para a extensão SIGMA também poder chamar diretamente.
+  window.__COMERCIAL_SIGMA_BRIDGE__={
+    version:'2.5.2',
+    isReady:()=>Boolean(window.__COMERCIAL_APP_RUNNING__ && $('#comercial-v2-modal')),
+    openChamado:sigmaOpenChamado
+  };
   function sigmaHandleClick(event) {
     const target=event.target;
     if (!(target instanceof Element) || !$('#sigma-corpo-tabela')) return;
+    const openControl=target.closest('#sigma-corpo-tabela [data-acao="comercial"]');
+    if (openControl) {
+      // Impedir o aviso antigo da extensão SIGMA quando ela tenta usar uma
+      // função de abertura que não existe neste contexto.
+      blockEvent(event);
+      sigmaOpenChamado(openControl);
+      return;
+    }
     if (target.closest('[data-acao="feedback"]')) {
       // Não impedir abertura: apenas preparar a validação quando a janela aparecer.
       setTimeout(sigmaSyncModal,0);return;
@@ -777,7 +832,7 @@
     window.addEventListener('click',sigmaHandleClick,{capture:true});
     window.addEventListener('keydown',sigmaHandleKeydown,{capture:true});
     // A extensão SIGMA redesenha linhas/menus dinamicamente; scan() acompanha.
-    console.info('[Comercial V2.5.1] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
+    console.info('[Comercial V2.5.2] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
   }
 
   function timeString(ts) {
@@ -1034,7 +1089,7 @@
     const modal = document.createElement('div');
     modal.id = 'comercial-v2-modal'; modal.className = 'cv-backdrop';
     modal.innerHTML = `<div class="cv-window" role="dialog" aria-modal="true" aria-label="Comercial V2">
-      <div class="cv-header"><img src="${ICON}" alt=""><div class="cv-header-copy"><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.4.7</span></small><div id="cv-session-text" class="cv-header-account" aria-live="polite">Verificando login...</div></div><button class="cv-button" id="cv-close" type="button" aria-label="Fechar Comercial">✕</button></div>
+      <div class="cv-header"><img src="${ICON}" alt=""><div class="cv-header-copy"><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.5.2 TESTE</span></small><div id="cv-session-text" class="cv-header-account" aria-live="polite">Verificando login...</div></div><button class="cv-button" id="cv-close" type="button" aria-label="Fechar Comercial">✕</button></div>
       <div class="cv-content">
         <div class="cv-info" id="cv-info"></div>
         <a id="cv-history-link" class="cv-button" style="text-align:center;display:block;text-decoration:none" target="_blank" rel="noopener noreferrer" href="https://unix-page.github.io/comercial/">Ver linha do tempo completa desta NF ↗</a>
@@ -1615,7 +1670,7 @@
     observer.observe(document.body,{childList:true,subtree:true});
     installKanbanProtection();
     installSigmaProtection();
-    console.info('[Comercial V2.5.1] Proteção Kanban capturando gestos no window. Diagnóstico: window.__COMERCIAL_KANBAN_DIAGNOSTICO__');
+    console.info('[Comercial V2.5.2] Proteção Kanban capturando gestos no window. Diagnóstico: window.__COMERCIAL_KANBAN_DIAGNOSTICO__');
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
