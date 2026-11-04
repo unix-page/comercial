@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.5.2 TESTE (SIGMA)
+// @name         Comercial • Infradesk • Registro de divergências V2.5.3 TESTE (SIGMA)
 // @namespace    comercial/infradesk
-// @version      2.5.2
+// @version      2.5.3
 // @description  Piloto: mesmas ocorrências no Kanban e na grade SIGMA; abertura do Comercial diretamente pela tabela; validação da fila 6.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
@@ -21,10 +21,16 @@
       if (e.button != null && e.button!==0) return;
       const card=e.target instanceof Element?e.target.closest('.chamado-item[data-chamado-id]'):null;
       const col=card?.closest('ul.list-status-chamados[data-status-id]');
-      origin=col?.getAttribute('data-status-id')==='6'?{x:e.clientX,y:e.clientY,denied:false}:null;
+      origin=col?.getAttribute('data-status-id')==='6'
+        ? {x:e.clientX,y:e.clientY,denied:false}:null;
     };
     const moving=e=>{
-      if (!origin || (e.clientX===origin.x && e.clientY===origin.y)) return;
+      if (!origin) return;
+      const targetColumn=Array.from(document.querySelectorAll('.wrap-status'))
+        .find(w=>{const r=w.getBoundingClientRect();return r.width>0&&r.height>0&&
+          e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom;})
+        ?.querySelector('ul.list-status-chamados[data-status-id]')?.getAttribute('data-status-id');
+      if (!targetColumn || targetColumn==='6') return;
       if (e.cancelable) e.preventDefault();
       e.stopImmediatePropagation();
       if (!origin.denied) {
@@ -43,7 +49,7 @@
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.5.2';
+  window.__COMERCIAL_APP_VERSION__ = '2.5.3';
   window.__COMERCIAL_TEST_BUILD__ = true;
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
@@ -88,13 +94,13 @@
   const KANBAN_STATUS_ID = '6'; // Xabuia: Em Análise Terceiro.
   const KANBAN_STATUS_LABEL = 'em analise terceiro';
   // Proteção FAIL-CLOSED: erro, timeout, sem sessão ou zero registros bloqueiam a saída.
-  // Só verifica ao iniciar um ARRASTE da fila 6 ou ao acionar um controle de saída.
+  // Só verifica ao sair geometricamente da coluna 6; clique e rearranjo interno são livres.
   const MOVE_CHECK_TTL_MS = 12000; // nova tentativa imediata após resposta, sem leituras por pixel
   const MOVE_ERROR_COOLDOWN_MS = 4500; // nova tentativa de conexão após curto intervalo
   const MOVE_SERVER_TIMEOUT_MS = 8000;
   const moveGate = { results: new Map(), pending: new Map(), gesture: null };
   const moveDebug = {
-    version:'2.5.2', windowCaptureActive:false, gestures:0, blocked:0,
+    version:'2.5.3', windowCaptureActive:false, gestures:0, blocked:0,
     checks:0, lastEvent:'', lastOutcome:'', lastNote:''
   };
   window.__COMERCIAL_KANBAN_DIAGNOSTICO__ = moveDebug;
@@ -353,10 +359,9 @@
     return task;
   }
 
-  // A página usa jQuery UI Sortable. A PRIMEIRA movimentação do mouse é
-  // interceptada em window/capture, ANTES do mousemove do Sortable no document.
-  // Assim, nem um drag com usuário deslogado chega a iniciar a troca de status.
-  // Cliques simples nos cartões e TODAS as outras filas permanecem normais.
+  // A página usa jQuery UI Sortable. Ao entrar em uma OUTRA coluna,
+  // intercepta o mousemove em window/capture ANTES do Sortable no document.
+  // Não intercepta cliques, pequenos movimentos ou a ordenação da própria fila.
   const MOVE_CONTROL = [
     '[data-action="mover"]', '[data-action="alterar-status"]',
     '[data-action="move"]', '[data-action="change-status"]',
@@ -382,9 +387,25 @@
   function eventCard(target) {
     return target instanceof Element?target.closest('.chamado-item[data-chamado-id]'):null;
   }
+  // Usar os limites reais das colunas, não um simples movimento do mouse.
+  // Esta verificação acontece na CAPTURA, antes do Sortable do Infradesk.
+  function moveDestinationColumn(at) {
+    if (!at) return '';
+    for (const wrapper of $$('.wrap-status')) {
+      const list=wrapper.querySelector('ul.list-status-chamados[data-status-id]');
+      if (!list) continue;
+      const rect=wrapper.getBoundingClientRect();
+      if (rect.width>0 && rect.height>0 &&
+          at.x>=rect.left && at.x<=rect.right && at.y>=rect.top && at.y<=rect.bottom)
+        return trim(list.getAttribute('data-status-id'));
+    }
+    return '';
+  }
   function beginMoveGesture(event) {
     if (event.button != null && event.button !== 0) return;
     const card=eventCard(event.target);
+    // O controle também protege arrastes iniciados sobre títulos, links e ícones.
+    // Um clique normal não alcança outra coluna e nunca dispara o bloqueio.
     if (!card||!isTargetCard(card)) {moveGate.gesture=null;return;}
     const data=extract(card),at=gesturePoint(event);
     if (!data?.chave || !at) {moveGate.gesture=null;return;}
@@ -395,7 +416,12 @@
     moveDebug.gestures++;
     moveDebug.lastEvent=event.type+' / origem fila 6';
   }
-  function clearMoveGesture() {moveGate.gesture=null;}
+  function clearMoveGesture(event) {
+    // Native DnD cancela o pointer mas não termina o arraste.
+    if (moveGate.gesture?.nativeDragging &&
+        ['pointercancel','pointerup','mouseup'].includes(event?.type)) return;
+    moveGate.gesture=null;
+  }
   function requestMoveVerification(key,nf) {
     if (moveGate.pending.has(key)) return;
     moveDebug.checks++;
@@ -430,25 +456,38 @@
   function guardMoveMotion(event) {
     const g=moveGate.gesture;
     if (!g) return;
-    if (event.buttons!=null && event.buttons===0 && !event.type.startsWith('touch') && event.pointerType!=='touch') return;
-    const at=gesturePoint(event);
-    // Não conferir em clique, nem com movimento zero. Nenhuma outra fila é consultada.
-    if (!at || (at.x===g.x && at.y===g.y)) return;
+    if (event.type!=='dragover' && event.buttons!=null && event.buttons===0 &&
+        !event.type.startsWith('touch') && event.pointerType!=='touch') return;
     if (g.blocked) {blockEvent(event);return;}
+    const destination=moveDestinationColumn(gesturePoint(event));
+    // Não validar por pixel deslocado! Só quando o mouse realmente entra
+    // na área de outra fila. Permite clique e ordenar dentro da fila 6.
+    if (!destination || destination===KANBAN_STATUS_ID) return;
     if (checkMoveAttempt(event,g.key,g.nf,g)) g.blocked=true;
   }
   function guardNativeDrag(event) {
     if (event.type==='dragstart') {
       if (!moveGate.gesture) {
-        const card=eventCard(event.target);
+        // Arrastar texto selecionado pode produzir um Text node.
+        const target=event.target instanceof Node && event.target.nodeType===3
+          ? event.target.parentElement : event.target;
+        const card=eventCard(target);
         if (card&&isTargetCard(card)) {
           const data=extract(card),at=gesturePoint(event);
           if (data?.chave) moveGate.gesture={card,key:data.chave,nf:data.numeroNf,
             x:at?.x??0,y:at?.y??0,started:Date.now(),inspected:false,blocked:false};
         }
       }
+      if (moveGate.gesture) moveGate.gesture.nativeDragging=true;
+      // Só existe tentativa de saída quando cruzar a fronteira da coluna.
+      return;
+    }
+    if (event.type==='drop') {
       const g=moveGate.gesture;
-      if (g && checkMoveAttempt(event,g.key,g.nf,g)) g.blocked=true;
+      if (!g) return;
+      const destination=moveDestinationColumn(gesturePoint(event));
+      if (destination && destination!==KANBAN_STATUS_ID)
+        checkMoveAttempt(event,g.key,g.nf,g);
       return;
     }
     guardMoveMotion(event);
@@ -475,6 +514,7 @@
       window.addEventListener(type,clearMoveGesture,{capture:true,passive:true});
     window.addEventListener('dragstart',guardNativeDrag,{capture:true,passive:false});
     window.addEventListener('dragover',guardNativeDrag,{capture:true,passive:false});
+    window.addEventListener('drop',guardNativeDrag,{capture:true,passive:false});
     window.addEventListener('click',guardMoveControl,{capture:true,passive:false});
     moveDebug.windowCaptureActive=true;
   }
@@ -494,7 +534,7 @@
     lastNotice:'', lastNoticeAt:0
   };
   const sigmaDebug = {
-    version:'2.5.2', gradeDetected:false, selected:0, inThird:0,
+    version:'2.5.3', gradeDetected:false, selected:0, inThird:0,
     batchState:'livre', blocked:0, lastEvent:'', lastMessage:''
   };
   window.__COMERCIAL_SIGMA_DIAGNOSTICO__ = sigmaDebug;
@@ -769,7 +809,7 @@
   }
   // API pública pequena para a extensão SIGMA também poder chamar diretamente.
   window.__COMERCIAL_SIGMA_BRIDGE__={
-    version:'2.5.2',
+    version:'2.5.3',
     isReady:()=>Boolean(window.__COMERCIAL_APP_RUNNING__ && $('#comercial-v2-modal')),
     openChamado:sigmaOpenChamado
   };
@@ -832,7 +872,7 @@
     window.addEventListener('click',sigmaHandleClick,{capture:true});
     window.addEventListener('keydown',sigmaHandleKeydown,{capture:true});
     // A extensão SIGMA redesenha linhas/menus dinamicamente; scan() acompanha.
-    console.info('[Comercial V2.5.2] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
+    console.info('[Comercial V2.5.3] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
   }
 
   function timeString(ts) {
@@ -1089,7 +1129,7 @@
     const modal = document.createElement('div');
     modal.id = 'comercial-v2-modal'; modal.className = 'cv-backdrop';
     modal.innerHTML = `<div class="cv-window" role="dialog" aria-modal="true" aria-label="Comercial V2">
-      <div class="cv-header"><img src="${ICON}" alt=""><div class="cv-header-copy"><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.5.2 TESTE</span></small><div id="cv-session-text" class="cv-header-account" aria-live="polite">Verificando login...</div></div><button class="cv-button" id="cv-close" type="button" aria-label="Fechar Comercial">✕</button></div>
+      <div class="cv-header"><img src="${ICON}" alt=""><div class="cv-header-copy"><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.5.3 TESTE</span></small><div id="cv-session-text" class="cv-header-account" aria-live="polite">Verificando login...</div></div><button class="cv-button" id="cv-close" type="button" aria-label="Fechar Comercial">✕</button></div>
       <div class="cv-content">
         <div class="cv-info" id="cv-info"></div>
         <a id="cv-history-link" class="cv-button" style="text-align:center;display:block;text-decoration:none" target="_blank" rel="noopener noreferrer" href="https://unix-page.github.io/comercial/">Ver linha do tempo completa desta NF ↗</a>
@@ -1670,7 +1710,7 @@
     observer.observe(document.body,{childList:true,subtree:true});
     installKanbanProtection();
     installSigmaProtection();
-    console.info('[Comercial V2.5.2] Proteção Kanban capturando gestos no window. Diagnóstico: window.__COMERCIAL_KANBAN_DIAGNOSTICO__');
+    console.info('[Comercial V2.5.3] Proteção Kanban capturando gestos no window. Diagnóstico: window.__COMERCIAL_KANBAN_DIAGNOSTICO__');
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
