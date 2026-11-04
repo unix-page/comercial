@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.5.0
+// @name         Comercial • Infradesk • Registro de divergências V2.5.8 (KANBAN + SIGMA)
 // @namespace    comercial/infradesk
-// @version      2.5.0
-// @description  Controle da fila Em Análise Terceiro (6): login Comercial ativo, ao menos uma divergência aberta e respondida, nenhuma pendente; sem limitar outras filas.
+// @version      2.5.8
+// @description  Oficial: mesmas ocorrências no Kanban e na grade SIGMA; abertura do Comercial diretamente pela tabela; validação da fila 6.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
 // @noframes
@@ -21,10 +21,16 @@
       if (e.button != null && e.button!==0) return;
       const card=e.target instanceof Element?e.target.closest('.chamado-item[data-chamado-id]'):null;
       const col=card?.closest('ul.list-status-chamados[data-status-id]');
-      origin=col?.getAttribute('data-status-id')==='6'?{x:e.clientX,y:e.clientY,denied:false}:null;
+      origin=col?.getAttribute('data-status-id')==='6'
+        ? {x:e.clientX,y:e.clientY,denied:false}:null;
     };
     const moving=e=>{
-      if (!origin || (e.clientX===origin.x && e.clientY===origin.y)) return;
+      if (!origin) return;
+      const targetColumn=Array.from(document.querySelectorAll('.wrap-status'))
+        .find(w=>{const r=w.getBoundingClientRect();return r.width>0&&r.height>0&&
+          e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom;})
+        ?.querySelector('ul.list-status-chamados[data-status-id]')?.getAttribute('data-status-id');
+      if (!targetColumn || targetColumn==='6') return;
       if (e.cancelable) e.preventDefault();
       e.stopImmediatePropagation();
       if (!origin.denied) {
@@ -36,14 +42,24 @@
         setTimeout(()=>box.remove(),6500);
       }
     };
-    window.addEventListener('mousedown',started,{capture:true});
+    window.addEventListener('mousedown',e=>{
+      started(e);
+      if (!origin) return;
+      // Bloqueia o Sortable antes da inicialização, mesmo sem SDK Firebase.
+      if (e.target instanceof Element &&
+          !e.target.closest('button,input,select,textarea,option,[contenteditable="true"]')) {
+        if (e.cancelable) e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+    },{capture:true,passive:false});
     window.addEventListener('mousemove',moving,{capture:true,passive:false});
     window.addEventListener('mouseup',()=>{origin=null;},{capture:true});
-    console.error('[Comercial V2.5.0] Firebase compat ausente: saída da fila 6 bloqueada até corrigir o loader.');
+    console.error('[Comercial V2.5.8] Firebase compat ausente: saída da fila 6 bloqueada até corrigir o loader.');
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.5.0';
+  window.__COMERCIAL_APP_VERSION__ = '2.5.8';
+  window.__COMERCIAL_TEST_BUILD__ = false;
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
   const CONFIG = {
@@ -86,15 +102,16 @@
   const CARD_CACHE_KEY = 'comercial_v2_card_cache_uid';
   const KANBAN_STATUS_ID = '6'; // Xabuia: Em Análise Terceiro.
   const KANBAN_STATUS_LABEL = 'em analise terceiro';
-  // Proteção FAIL-CLOSED: erro, timeout, sem sessão ou zero registros bloqueiam a saída.
-  // Só verifica ao iniciar um ARRASTE da fila 6 ou ao acionar um controle de saída.
+  // Proteção FAIL-CLOSED: não inicia Sortable na fila 6 sem autorização.
+  // Cliques e ações continuam livres; uma tentativa de arraste exige validação.
+  // A ordenação interna da fila 6 também aguarda validação (medida conservadora).
   const MOVE_CHECK_TTL_MS = 12000; // nova tentativa imediata após resposta, sem leituras por pixel
   const MOVE_ERROR_COOLDOWN_MS = 4500; // nova tentativa de conexão após curto intervalo
   const MOVE_SERVER_TIMEOUT_MS = 8000;
-  const moveGate = { results: new Map(), pending: new Map(), gesture: null };
+  const moveGate = { results: new Map(), pending: new Map(), gesture: null, startDenied: null };
   const moveDebug = {
-    version:'2.5.0', windowCaptureActive:false, gestures:0, blocked:0,
-    checks:0, lastEvent:'', lastOutcome:'', lastNote:''
+    version:'2.5.8', windowCaptureActive:false, gestures:0, blocked:0,
+    checks:0, dragStartDenied:0, lastEvent:'', lastOutcome:'', lastNote:''
   };
   window.__COMERCIAL_KANBAN_DIAGNOSTICO__ = moveDebug;
   const state = {
@@ -222,6 +239,27 @@
     return { chave: s, cnpj: s.slice(6,20), numeroNf: String(Number(s.slice(25,34))), serie: s.slice(22,25) };
   }
   function extract(card) {
+    // Grade SIGMA: cada chamado é uma TR, e não um LI .chamado-item.
+    // Os campos seguem exatamente o HTML da tabela que recebemos.
+    if (card?.matches?.('#sigma-corpo-tabela tr[data-sigma-chamado-id]')) {
+      const info=sigmaRowInfo(card);
+      const parsed=parseKey(info?.key || '');
+      if (!parsed) return null;
+      const fornecedorNome=trim($('.sigma-fornecedor',card)?.textContent || 'Fornecedor não identificado');
+      const tipo=trim($('.sigma-tipo strong',card)?.textContent || '');
+      const status=trim($('.sigma-status-badge',card)?.textContent || '');
+      return {
+        ...parsed,
+        chamadoInfradeskId: info.id,
+        fornecedorNome,
+        fornecedorTexto: fornecedorNome,
+        fornecedorId: '',
+        empresa: '', // A grade apresentada não informa a unidade.
+        categoriaNota: tipo,
+        statusInfradesk: status,
+        descricaoInfradesk: ''
+      };
+    }
     const text = card.innerText || card.textContent || '';
     const match = text.match(/\b\d{44}\b/) || text.match(/(?:\d[\s.\-]*){44}/);
     const parsed = parseKey(match?.[0]);
@@ -331,10 +369,9 @@
     return task;
   }
 
-  // A página usa jQuery UI Sortable. A PRIMEIRA movimentação do mouse é
-  // interceptada em window/capture, ANTES do mousemove do Sortable no document.
-  // Assim, nem um drag com usuário deslogado chega a iniciar a troca de status.
-  // Cliques simples nos cartões e TODAS as outras filas permanecem normais.
+  // A página usa jQuery UI Sortable. Ao entrar em uma OUTRA coluna,
+  // intercepta o mousemove em window/capture ANTES do Sortable no document.
+  // Não intercepta cliques, pequenos movimentos ou a ordenação da própria fila.
   const MOVE_CONTROL = [
     '[data-action="mover"]', '[data-action="alterar-status"]',
     '[data-action="move"]', '[data-action="change-status"]',
@@ -360,9 +397,74 @@
   function eventCard(target) {
     return target instanceof Element?target.closest('.chamado-item[data-chamado-id]'):null;
   }
+  // Usar os limites reais das colunas, não um simples movimento do mouse.
+  // Esta verificação acontece na CAPTURA, antes do Sortable do Infradesk.
+  function moveDestinationColumn(at) {
+    if (!at) return '';
+    for (const wrapper of $$('.wrap-status')) {
+      const list=wrapper.querySelector('ul.list-status-chamados[data-status-id]');
+      if (!list) continue;
+      const rect=wrapper.getBoundingClientRect();
+      if (rect.width>0 && rect.height>0 &&
+          at.x>=rect.left && at.x<=rect.right && at.y>=rect.top && at.y<=rect.bottom)
+        return trim(list.getAttribute('data-status-id'));
+    }
+    return '';
+  }
+  const MOVE_DISTANCE = 8; // tolerância antes de considerar uma tentativa de arraste
+  // TRAVA DE ORIGEM: bloquear o mousedown NA CAPTURA impede que o jQuery UI
+  // Sortable inicialize _mouseStart(). Parar mousemove depois de iniciar o
+  // Sortable NÃO garante que o evento de mouseup não grave o status remoto.
+  // Os outros status não passam por esta guarda.
+  function guardSortableStart(event) {
+    if (event.button !== 0) return;
+    const target=event.target instanceof Element ? event.target : null;
+    const card=eventCard(target);
+    if (!card || !isTargetCard(card)) return;
+    // Elementos interativos não devem sofrer interferência no clique.
+    // jQuery UI já ignora inputs/botões; manter abertura do Comercial intacta.
+    if (target.closest('button,input,textarea,select,option,[contenteditable="true"]')) return;
+    const data=extract(card);
+    const verdict=data?.chave ? moveVerdict(data.chave) : {status:'chave-invalida'};
+    if (verdict.status==='permitido') {
+      moveGate.startDenied=null;
+      moveDebug.lastOutcome='ARRASTE AUTORIZADO NA ORIGEM';
+      return;
+    }
+    // Bloqueia a inicialização do Sortable, não apenas o movimento visual.
+    blockEvent(event);
+    const point=gesturePoint(event);
+    moveGate.startDenied={key:data?.chave||'',nf:data?.numeroNf||'?',card,
+      x:point?.x??0,y:point?.y??0,at:Date.now(),signaled:false};
+    moveDebug.dragStartDenied++;
+    moveDebug.lastEvent='mousedown / sortable cancelado ANTES de iniciar';
+    moveDebug.lastOutcome=(verdict.status||'chave-invalida').toUpperCase()+' / bloqueado na origem';
+    // A validação/aviso será disparada SOMENTE quando tentar arrastar para
+    // fora da coluna. Um simples clique nunca dispara mensagem de bloqueio.
+  }
+  function inspectDeniedDrag(event) {
+    const g=moveGate.startDenied;
+    if (!g) return;
+    const at=gesturePoint(event);
+    if (!at) return;
+    if (Math.hypot(at.x-g.x,at.y-g.y)<MOVE_DISTANCE) return;
+    const destination=moveDestinationColumn(at);
+    if (!destination || destination===KANBAN_STATUS_ID || g.signaled) return;
+    g.signaled=true;
+    // Nunca há movimento real: Sortable não recebeu o mousedown.
+    if (!g.key) moveNotice('Comercial: chave de acesso não identificada. Movimentação bloqueada.');
+    else {
+      const verdict=moveVerdict(g.key);
+      if (verdict.status==='consultar') requestMoveVerification(g.key,g.nf);
+      else moveNotice(moveMessage(verdict,g.nf));
+    }
+  }
+  function clearDeniedDrag() { moveGate.startDenied=null; }
   function beginMoveGesture(event) {
     if (event.button != null && event.button !== 0) return;
     const card=eventCard(event.target);
+    // O controle também protege arrastes iniciados sobre títulos, links e ícones.
+    // Um clique normal não alcança outra coluna e nunca dispara o bloqueio.
     if (!card||!isTargetCard(card)) {moveGate.gesture=null;return;}
     const data=extract(card),at=gesturePoint(event);
     if (!data?.chave || !at) {moveGate.gesture=null;return;}
@@ -373,7 +475,12 @@
     moveDebug.gestures++;
     moveDebug.lastEvent=event.type+' / origem fila 6';
   }
-  function clearMoveGesture() {moveGate.gesture=null;}
+  function clearMoveGesture(event) {
+    // Native DnD cancela o pointer mas não termina o arraste.
+    if (moveGate.gesture?.nativeDragging &&
+        ['pointercancel','pointerup','mouseup'].includes(event?.type)) return;
+    moveGate.gesture=null;
+  }
   function requestMoveVerification(key,nf) {
     if (moveGate.pending.has(key)) return;
     moveDebug.checks++;
@@ -408,25 +515,38 @@
   function guardMoveMotion(event) {
     const g=moveGate.gesture;
     if (!g) return;
-    if (event.buttons!=null && event.buttons===0 && !event.type.startsWith('touch') && event.pointerType!=='touch') return;
-    const at=gesturePoint(event);
-    // Não conferir em clique, nem com movimento zero. Nenhuma outra fila é consultada.
-    if (!at || (at.x===g.x && at.y===g.y)) return;
+    if (event.type!=='dragover' && event.buttons!=null && event.buttons===0 &&
+        !event.type.startsWith('touch') && event.pointerType!=='touch') return;
     if (g.blocked) {blockEvent(event);return;}
+    const destination=moveDestinationColumn(gesturePoint(event));
+    // Não validar por pixel deslocado! Só quando o mouse realmente entra
+    // na área de outra fila. Permite clique e ordenar dentro da fila 6.
+    if (!destination || destination===KANBAN_STATUS_ID) return;
     if (checkMoveAttempt(event,g.key,g.nf,g)) g.blocked=true;
   }
   function guardNativeDrag(event) {
     if (event.type==='dragstart') {
       if (!moveGate.gesture) {
-        const card=eventCard(event.target);
+        // Arrastar texto selecionado pode produzir um Text node.
+        const target=event.target instanceof Node && event.target.nodeType===3
+          ? event.target.parentElement : event.target;
+        const card=eventCard(target);
         if (card&&isTargetCard(card)) {
           const data=extract(card),at=gesturePoint(event);
           if (data?.chave) moveGate.gesture={card,key:data.chave,nf:data.numeroNf,
             x:at?.x??0,y:at?.y??0,started:Date.now(),inspected:false,blocked:false};
         }
       }
+      if (moveGate.gesture) moveGate.gesture.nativeDragging=true;
+      // Só existe tentativa de saída quando cruzar a fronteira da coluna.
+      return;
+    }
+    if (event.type==='drop') {
       const g=moveGate.gesture;
-      if (g && checkMoveAttempt(event,g.key,g.nf,g)) g.blocked=true;
+      if (!g) return;
+      const destination=moveDestinationColumn(gesturePoint(event));
+      if (destination && destination!==KANBAN_STATUS_ID)
+        checkMoveAttempt(event,g.key,g.nf,g);
       return;
     }
     guardMoveMotion(event);
@@ -444,8 +564,15 @@
     if (data?.chave) checkMoveAttempt(event,data.chave,data.numeroNf);
   }
   function installKanbanProtection() {
+    // CRÍTICO: registrar primeiro no capture, ANTES do handler do Sortable.
+    window.addEventListener('mousedown',guardSortableStart,{capture:true,passive:false});
     for (const type of ['pointerdown','mousedown','touchstart'])
       window.addEventListener(type,beginMoveGesture,{capture:true,passive:true});
+    window.addEventListener('pointermove',inspectDeniedDrag,{capture:true,passive:true});
+    window.addEventListener('mousemove',inspectDeniedDrag,{capture:true,passive:true});
+    window.addEventListener('mouseup',inspectDeniedDrag,{capture:true,passive:true});
+    for (const type of ['pointerup','mouseup','pointercancel','touchend','touchcancel'])
+      window.addEventListener(type,clearDeniedDrag,{capture:true,passive:true});
     for (const type of ['pointermove','mousemove','touchmove'])
       window.addEventListener(type,guardMoveMotion,{capture:true,passive:false});
     // Evitar limpar no pointerup antes do mouseup, que encerra o Sortable.
@@ -453,8 +580,522 @@
       window.addEventListener(type,clearMoveGesture,{capture:true,passive:true});
     window.addEventListener('dragstart',guardNativeDrag,{capture:true,passive:false});
     window.addEventListener('dragover',guardNativeDrag,{capture:true,passive:false});
+    window.addEventListener('drop',guardNativeDrag,{capture:true,passive:false});
     window.addEventListener('click',guardMoveControl,{capture:true,passive:false});
     moveDebug.windowCaptureActive=true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // CONTROLE DA GRADE SIGMA — integração não invasiva com a interface de terceiros.
+  // Usa o HTML disponível: #sigma-corpo-tabela, checkbox .sigma-check-item,
+  // #sigma-feedback-status e #sigma-feedback-gravar.
+  // Não altera eventos de detalhes, Comercial, Xabuia, feedback ou checkbox.
+  // Não usa onSnapshot; consulta apenas NF selecionada para mudança de status.
+  // Para garantia total de lotes, inserir a mesma verificação ANTES da chamada
+  // à API no userscript que implementa "Ações em lote" (código não fornecido).
+  // ---------------------------------------------------------------------------
+  const sigmaGate = {
+    selection:'', token:0, state:'livre', failures:[], pending:null, count:0,
+    modalId:'', modalKey:'', modalProtected:false, modalNf:'',
+    lastNotice:'', lastNoticeAt:0
+  };
+  const sigmaDebug = {
+    version:'2.5.8', gradeDetected:false, selected:0, inThird:0,
+    batchState:'livre', blocked:0, lastEvent:'', lastMessage:''
+  };
+  window.__COMERCIAL_SIGMA_DIAGNOSTICO__ = sigmaDebug;
+
+  function sigmaRowStatus(row) {
+    if (!row) return '';
+    const badge=row.querySelector('.sigma-status-badge');
+    const cls=badge?.className?.match?.(/(?:^|\s)status-(\d+)(?:\s|$)/);
+    if (cls) return cls[1];
+    const raw=row.getAttribute('data-sigma-assinatura') || '';
+    if (raw) return raw.split('|')[1] || '';
+    return /em an[aá]lise terceiro/i.test(badge?.textContent||'')?'6':'';
+  }
+  function sigmaRowInfo(row) {
+    if (!row) return null;
+    const id=row.getAttribute('data-sigma-chamado-id') || '';
+    const raw=row.querySelector('[data-acao="copiar-chave"]')?.getAttribute('data-valor') ||
+      row.querySelector('.sigma-chave-linha')?.getAttribute('title') ||
+      row.querySelector('.sigma-chave-texto')?.textContent ||
+      row.getAttribute('data-sigma-assinatura') || '';
+    const keyMatch=String(raw).match(/\b\d{44}\b/);
+    const key=keyMatch ? (parseKey(keyMatch[0])?.chave || '') : '';
+    const nf=trim(row.querySelector('.sigma-nf-numero strong')?.textContent || '')
+      .replace(/^NF\s*(?:N[ºo°.]*)?\s*:?\s*/i,'') || id;
+    return {id,key,nf,status:sigmaRowStatus(row),row};
+  }
+  function sigmaRowById(id) {
+    if (!id) return null;
+    return $$('#sigma-corpo-tabela tr[data-sigma-chamado-id]')
+      .find(row=>row.getAttribute('data-sigma-chamado-id')===id) || null;
+  }
+  function sigmaSelected() {
+    return $$('#sigma-corpo-tabela .sigma-check-item:checked')
+      .map(el=>sigmaRowInfo(el.closest('tr[data-sigma-chamado-id]'))).filter(Boolean);
+  }
+  function sigmaThirdSelected() {return sigmaSelected().filter(row=>row.status==='6');}
+  function sigmaSelectionSignature(items) {
+    return [auth.currentUser?.uid||'deslogado',
+      ...items.map(x=>`${x.id}:${x.status}:${x.key}`).sort()].join('|');
+  }
+  function sigmaNotice(message,error=true) {
+    if (!message) return;
+    const now=Date.now();
+    if (message===sigmaGate.lastNotice && now-sigmaGate.lastNoticeAt<2600) return;
+    sigmaGate.lastNotice=message;sigmaGate.lastNoticeAt=now;
+    sigmaDebug.lastMessage=message;
+    moveNotice(message,error);
+  }
+  function sigmaBlockedReason(item,verdict) {
+    if (!item.key) return `Chamado #${item.id}: chave de acesso ausente ou inválida. Não é possível validar a saída da fila 6.`;
+    return moveMessage(verdict||{status:'erro'},item.nf||item.id);
+  }
+  function sigmaVerdict(item) {
+    if (!item?.key) return {status:'erro'};
+    return moveVerdict(item.key);
+  }
+  function sigmaBatchAllowed() {
+    const rows=sigmaThirdSelected();
+    if (!rows.length) return true; // sem notas da fila 6: não interferir.
+    return sigmaGate.state==='liberado' &&
+      sigmaGate.selection===sigmaSelectionSignature(sigmaSelected()) &&
+      rows.every(item=>sigmaVerdict(item).status==='permitido');
+  }
+  function sigmaBatchMessage() {
+    if (sigmaGate.failures.length) {
+      const f=sigmaGate.failures;
+      return `Ações em lote: ${f.length} nota(s) da fila Em Análise Terceiro não autorizada(s). `+
+        f.slice(0,2).join(' ') + (f.length>2?` E mais ${f.length-2} bloqueio(s).`:'');
+    }
+    return sigmaGate.state==='conferindo'
+      ? 'Ações em lote: conferindo o login e as ocorrências das notas da fila Em Análise Terceiro...'
+      : 'Ações em lote: selecione apenas notas autorizadas a sair de Em Análise Terceiro.';
+  }
+  function sigmaIsBatchElement(node) {
+    if (!(node instanceof Element) || !$('#sigma-corpo-tabela')) return false;
+    const control=node.closest('button, a, select, [role="button"], [role="option"]');
+    if (!control || control.closest('#sigma-corpo-tabela tr') || control.closest('.sigma-feedback-caixa')) return false;
+    const attr=[control.id,control.className,control.getAttribute('data-acao'),
+      control.getAttribute('name'),control.getAttribute('aria-label'),control.getAttribute('title'),
+      control.closest('[id*="sigma-lote"], [class*="sigma-lote"], [id*="sigma-batch"], [class*="sigma-batch"]')?.className]
+      .filter(Boolean).join(' ').toLowerCase();
+    const title=trim(control.textContent||'').toLowerCase();
+    // Sem HTML do cabeçalho do lote: procurar botões/menus de lote/status,
+    // sem confundir ações individuais e filtros comuns do Infradesk.
+    return /sigma/.test(attr) && /lote|batch|massa|status|mover|movimenta|finaliz/.test(attr+' '+title) ||
+      /lote|batch|massa/.test(attr) ||
+      /^(alterar status|mudar status|mover selecionad|finalizar selecionad)/.test(title);
+  }
+  function sigmaIsBatchStatusSelect(select) {
+    if (!(select instanceof HTMLSelectElement) || select.id==='sigma-feedback-status') return false;
+    const attrs=[select.id,select.name,select.className,
+      select.closest('[id*="sigma-lote"], [class*="sigma-lote"], [id*="sigma-batch"], [class*="sigma-batch"]')?.id || ''].join(' ').toLowerCase();
+    return /status/.test(attrs) && (/sigma|lote|batch|massa/.test(attrs));
+  }
+  function sigmaSetOptions(select,allowed) {
+    if (!select) return;
+    for (const option of Array.from(select.options)) {
+      if (!option.hasAttribute('data-comercial-original-disabled'))
+        option.setAttribute('data-comercial-original-disabled',option.disabled?'1':'0');
+      const originallyDisabled=option.getAttribute('data-comercial-original-disabled')==='1';
+      const next=originallyDisabled || (!allowed && option.value!=='6' && option.value!=='');
+      if (option.disabled!==next) option.disabled=next;
+    }
+  }
+  function sigmaSyncBatchControls() {
+    if (!$('#sigma-corpo-tabela')) return;
+    const selected=sigmaThirdSelected();
+    const allowed=!selected.length || sigmaBatchAllowed();
+    for (const select of Array.from(document.querySelectorAll('select')))
+      if (sigmaIsBatchStatusSelect(select)) sigmaSetOptions(select,allowed);
+  }
+  async function sigmaVerifyBatch() {
+    const items=sigmaSelected();
+    const third=items.filter(x=>x.status==='6');
+    const signature=sigmaSelectionSignature(items);
+    sigmaDebug.selected=items.length;
+    sigmaDebug.inThird=third.length;
+    const stillCached=third.every(x=>sigmaVerdict(x).status!=='consultar');
+    if (sigmaGate.selection===signature &&
+      (sigmaGate.state==='conferindo' ||
+        (stillCached && (sigmaGate.state==='liberado'||sigmaGate.state==='bloqueado')))) {
+      sigmaSyncBatchControls();
+      return sigmaGate.pending;
+    }
+    sigmaGate.token++;
+    const token=sigmaGate.token;
+    sigmaGate.selection=signature;
+    sigmaGate.failures=[];
+    sigmaGate.count=third.length;
+    if (!third.length) {
+      sigmaGate.state='livre';sigmaGate.pending=null;
+      sigmaDebug.batchState='livre';sigmaSyncBatchControls();return;
+    }
+    sigmaGate.state='conferindo';
+    sigmaDebug.batchState='conferindo';
+    sigmaSyncBatchControls();
+    if (!auth.currentUser?.uid || navigator.onLine===false) {
+      sigmaGate.state='bloqueado';
+      const msg=!auth.currentUser?.uid ? {status:'login'} : {status:'offline'};
+      sigmaGate.failures=third.map(item=>sigmaBlockedReason(item,msg));
+      sigmaDebug.batchState='bloqueado';
+      sigmaSyncBatchControls();
+      sigmaNotice(sigmaBatchMessage(),true);
+      return;
+    }
+    const job=(async()=>{
+      // Concorrência máxima 3: evita avalanche de reads no Firestore.
+      let next=0;
+      const reasons=[];
+      const worker=async()=>{
+        for (;;) {
+          const index=next++;
+          if (index>=third.length || token!==sigmaGate.token) return;
+          const item=third[index];
+          let verdict=sigmaVerdict(item);
+          if (verdict.status==='consultar') verdict=await verifyMoveByServer(item.key);
+          if (token!==sigmaGate.token) return;
+          if (verdict?.status!=='permitido') reasons.push(sigmaBlockedReason(item,verdict));
+        }
+      };
+      await Promise.all(Array.from({length:Math.min(3,third.length)},worker));
+      if (token!==sigmaGate.token || sigmaSelectionSignature(sigmaSelected())!==signature) return;
+      sigmaGate.failures=reasons;
+      sigmaGate.state=reasons.length?'bloqueado':'liberado';
+      sigmaDebug.batchState=sigmaGate.state;
+      sigmaSyncBatchControls();
+      if (reasons.length) sigmaNotice(sigmaBatchMessage(),true);
+      else sigmaNotice(`${third.length} nota(s) da fila 6 validada(s). Ações em lote autorizadas.`,false);
+    })().catch(err=>{
+      if (token!==sigmaGate.token) return;
+      sigmaGate.failures=['Erro ao conferir as notas selecionadas: '+err.message];
+      sigmaGate.state='bloqueado';sigmaDebug.batchState='bloqueado';
+      sigmaSyncBatchControls();
+    }).finally(()=>{if(token===sigmaGate.token)sigmaGate.pending=null;});
+    sigmaGate.pending=job;
+    return job;
+  }
+  function sigmaModalContext() {
+    const select=$('#sigma-feedback-status');
+    if (!select || !$('#sigma-corpo-tabela')) return null;
+    const title=trim($('#sigma-feedback-titulo')?.textContent || '');
+    const id=title.match(/#(\d+)/)?.[1] || '';
+    const item=sigmaRowInfo(sigmaRowById(id));
+    return {select,id,item,
+      protected: item ? item.status==='6' : select.value==='6',
+      key:item?.key||'',nf:item?.nf||id};
+  }
+  function sigmaSyncModal() {
+    const ctx=sigmaModalContext();
+    if (!ctx) return;
+    const changed=ctx.id!==sigmaGate.modalId || ctx.key!==sigmaGate.modalKey ||
+      ctx.protected!==sigmaGate.modalProtected;
+    sigmaGate.modalId=ctx.id;sigmaGate.modalKey=ctx.key;
+    sigmaGate.modalNf=ctx.nf;sigmaGate.modalProtected=ctx.protected;
+    let msgEl=$('#comercial-sigma-feedback-aviso');
+    if (!ctx.protected) {
+      sigmaSetOptions(ctx.select,true);
+      msgEl?.remove();return;
+    }
+    const verdict=ctx.key?moveVerdict(ctx.key):{status:'erro'};
+    const allowed=verdict.status==='permitido';
+    sigmaSetOptions(ctx.select,allowed);
+    if (!allowed && ctx.select.value!=='6') ctx.select.value='6';
+    if (!msgEl) {
+      msgEl=document.createElement('div');msgEl.id='comercial-sigma-feedback-aviso';
+      msgEl.style.cssText='margin:6px 0 0;padding:7px 9px;border-radius:5px;font:12px/1.4 system-ui';
+      ctx.select.insertAdjacentElement('afterend',msgEl);
+    }
+    msgEl.textContent=allowed
+      ? `✓ Comercial validado: ${verdict.answered||1} ocorrência(s) respondida(s), nenhuma pendente. É permitido alterar o status.`
+      : (verdict.status==='consultar'?'Conferindo login e ocorrências no Comercial...':sigmaBlockedReason({id:ctx.id,key:ctx.key,nf:ctx.nf},verdict));
+    msgEl.style.background=allowed?'#e7f7ee':'#fff0f0';
+    msgEl.style.color=allowed?'#196642':'#9b2334';
+    if ((changed || verdict.status==='consultar') && verdict.status==='consultar' &&
+        !moveGate.pending.has(ctx.key)) {
+      void verifyMoveByServer(ctx.key).then(()=>sigmaSyncModal());
+    }
+  }
+  function sigmaBlockModalAction(event) {
+    const ctx=sigmaModalContext();
+    if (!ctx?.protected || ctx.select.value==='6') return false;
+    const verdict=ctx.key?moveVerdict(ctx.key):{status:'erro'};
+    if (verdict.status==='permitido') return false;
+    blockEvent(event);
+    ctx.select.value='6';
+    sigmaDebug.blocked++;sigmaDebug.lastEvent=event.type+' / feedback';
+    sigmaSyncModal();
+    sigmaNotice(sigmaBlockedReason({id:ctx.id,key:ctx.key,nf:ctx.nf},verdict));
+    if (verdict.status==='consultar' && ctx.key)
+      void verifyMoveByServer(ctx.key).then(()=>sigmaSyncModal());
+    return true;
+  }
+  function sigmaHandleChange(event) {
+    const target=event.target;
+    if (!(target instanceof Element) || !$('#sigma-corpo-tabela')) return;
+    if (target.matches('.sigma-check-lote, .sigma-check-item, #sigma-selecao-todos')) {
+      queueMicrotask(()=>void sigmaVerifyBatch());
+      return;
+    }
+    if (target.id==='sigma-feedback-status') {
+      sigmaBlockModalAction(event);
+      return;
+    }
+    if (sigmaIsBatchStatusSelect(target) && sigmaThirdSelected().length &&
+        !sigmaBatchAllowed() && target.value!=='6' && target.value!=='') {
+      blockEvent(event);
+      // Opções não autorizadas não devem chegar ao código do SIGMA.
+      target.value=Array.from(target.options).some(x=>x.value==='')?'':'6';
+      sigmaDebug.blocked++;sigmaDebug.lastEvent='change / lote';
+      sigmaNotice(sigmaBatchMessage());
+      void sigmaVerifyBatch();
+    }
+  }
+  // Enriquecimento opcional da grade com o HTML real do cartão Infradesk.
+  // O mesmo endpoint é usado pelo próprio Infradesk para atualizar cartões.
+  // Erro/permissão/timeout não impedem abrir o Comercial.
+  async function enrichSigmaFromInfradesk(row) {
+    const original = extract(row);
+    if (!original?.chave || !original.chamadoInfradeskId || !window.fetch || !window.DOMParser) return;
+    const token = state.viewToken;
+    const id = original.chamadoInfradeskId;
+    const abort = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timerId = abort ? setTimeout(()=>abort.abort(),3500) : null;
+    try {
+      const response = await fetch('/backend/chamados/card/' + encodeURIComponent(id), {
+        credentials:'same-origin', ...(abort?{signal:abort.signal}:{})
+      });
+      if (!response.ok) return;
+      const html = await response.text();
+      const htmlDoc = new DOMParser().parseFromString(html,'text/html');
+      const kanbanCard = htmlDoc.querySelector('.chamado-item[data-chamado-id]');
+      if (!kanbanCard || kanbanCard.getAttribute('data-chamado-id')!==id) return;
+      const full = extract(kanbanCard);
+      if (!full || full.chave!==original.chave) return;
+      if (token!==state.viewToken || state.data?.chave!==original.chave || state.data?.chamadoInfradeskId!==id) return;
+      // Preencher somente campos ausentes da lista com informações do cartão real.
+      for (const field of ['empresa','fornecedorId','descricaoInfradesk','categoriaNota','fornecedorTexto','fornecedorNome']) {
+        if (!state.data[field] && full[field]) state.data[field]=full[field];
+      }
+      fillCardInfo(state.data);
+      sigmaDebug.enriched=id;
+    } catch (e) {
+      console.debug('[Comercial SIGMA] Complemento de informações indisponível:',e?.message||e);
+    } finally {if (timerId!==null) clearTimeout(timerId);}
+  }
+
+  // Ponte SIGMA -> modal Comercial já existente no Kanban. Sem outro login,
+  // sem duplicar o modal e sem depender de API interna da extensão SIGMA.
+  function sigmaOpenChamado(input) {
+    // Aceita tanto a linha quanto o ID; mantém o mesmo painel do Kanban.
+    const row=input instanceof Element
+      ? (input.matches('tr[data-sigma-chamado-id]') ? input : input.closest('tr[data-sigma-chamado-id]'))
+      : sigmaRowById(String(input ?? ''));
+    if (!row) {
+      moveNotice('Comercial: chamado não encontrado na grade SIGMA. Atualize a tabela.',true);
+      return false;
+    }
+    if (!extract(row)) {
+      moveNotice('Comercial: esta nota não possui uma chave de acesso válida de 44 dígitos.',true);
+      return false;
+    }
+    sigmaDebug.lastEvent='abrir Comercial / grade SIGMA';
+    sigmaDebug.lastOpened=row.getAttribute('data-sigma-chamado-id')||'';
+    sigmaDebug.opens=(sigmaDebug.opens||0)+1;
+    sigmaDebug.lastKeyFinal=extract(row)?.chave?.slice(-8)||'';
+    // O modal é o MESMO do Kanban. A abertura não depende do login.
+    try { if (!$('#comercial-v2-modal') && document.body) createUI(); }
+    catch(error) { sigmaDebug.lastOpenError=error?.message||String(error); console.error('[Comercial SIGMA] Erro ao montar modal:',error); sigmaNotice('Comercial: erro ao montar janela: '+sigmaDebug.lastOpenError); return false; }
+    console.info('[Comercial SIGMA] Abrindo chamado #'+sigmaDebug.lastOpened+' no modal original.');
+    void openCard(row).catch(error=>{
+      sigmaDebug.lastOpenError=error?.message||String(error);
+      console.error('[Comercial SIGMA] Erro abrindo chamado:',error);
+      sigmaNotice('Comercial: não foi possível abrir a janela ('+sigmaDebug.lastOpenError+').');
+    });
+    // A lista não possui necessariamente todos os campos do cartão do Kanban.
+    // Buscar dados complementares sem atrasar a abertura nem salvar alterações.
+    void enrichSigmaFromInfradesk(row);
+    return true;
+  }
+  // API pública pequena para a extensão SIGMA também poder chamar diretamente.
+  window.__COMERCIAL_SIGMA_BRIDGE__={
+    version:'2.5.8',
+    isReady:()=>Boolean($('#comercial-v2-modal')),
+    openChamado:sigmaOpenChamado,
+    abrir:sigmaOpenChamado,
+    diagnostico:()=>({...sigmaDebug,app:window.__COMERCIAL_APP_VERSION__,modal:!!$('#comercial-v2-modal'),modalAberto:!!$('#comercial-v2-modal')?.classList.contains('open'),modalDisplay:$('#comercial-v2-modal')?getComputedStyle($('#comercial-v2-modal')).display:'ausente'})
+  };
+  // SIGMA pode instalar seu próprio handler de click ANTES do nosso.
+  // A captura de pointerup é alternativa para o clique físico que um handler
+  // anterior consumir; não interfere em cliques em outros botões, e não abre
+  // quando há arrasto/seleção ou deslocamento do dedo/mouse.
+  let sigmaComercialPress=null;
+  let sigmaComercialLastOpen={id:'',at:0};
+  function sigmaCommercialButton(targetOrEvent) {
+    // composedPath permite reconhecer cliques em ícones SVG e em open Shadow DOM.
+    const nodes=typeof targetOrEvent?.composedPath==='function'
+      ? targetOrEvent.composedPath() : [targetOrEvent?.target||targetOrEvent];
+    for (const node of nodes) {
+      if (!(node instanceof Element)) continue;
+      const control = node.matches('[data-acao="comercial"]')
+        ? node : node.closest('[data-acao="comercial"]');
+      if (control && control.closest('tr[data-sigma-chamado-id]') &&
+          control.closest('.sigma-grade, #sigma-corpo-tabela')) return control;
+    }
+    return null;
+  }
+  // Vinculação direta, como no Xabuia. O pointerdown no mouse abre ANTES do
+  // evento click que o controlador SIGMA costuma consumir. No toque, aguarda o
+  // click/pointerup para não disparar ao rolar a lista.
+  // Mantém delegação e API pública como caminhos alternativos.
+  function sigmaBindCommercialButtons() {
+    const buttons=$$('#sigma-corpo-tabela tr[data-sigma-chamado-id] [data-acao="comercial"]');
+    for (const button of buttons) {
+      if (button.dataset.comercialBinding256==='1') continue;
+      button.dataset.comercialBinding256='1';
+      const invoke=(event)=>{
+        const opened=sigmaOpenOnce(button);
+        if (!opened) return;
+        if (event.cancelable) event.preventDefault();
+        event.stopImmediatePropagation?.();
+        event.stopPropagation();
+      };
+      // Mouse físico: executa antes de qualquer delegação de click da SIGMA.
+      button.addEventListener('pointerdown',event=>{
+        if (event.button!==0 || (event.pointerType && event.pointerType!=='mouse')) return;
+        sigmaDebug.lastInput='pointerdown-direto';
+        invoke(event);
+      },{capture:true});
+      // Fallback para navegadores que não disparam Pointer Events.
+      button.addEventListener('mousedown',event=>{
+        if (window.PointerEvent || event.button!==0) return;
+        sigmaDebug.lastInput='mousedown-direto';
+        invoke(event);
+      },{capture:true});
+      button.addEventListener('click',event=>{
+        sigmaDebug.lastInput='click-direto';
+        invoke(event);
+      },{capture:true});
+      button.addEventListener('keydown',event=>{
+        if (event.key!=='Enter' && event.key!==' ') return;
+        sigmaDebug.lastInput='teclado-direto';
+        invoke(event);
+      },{capture:true});
+    }
+    sigmaDebug.buttonsFound=buttons.length;
+    sigmaDebug.buttonsBound=buttons.filter(b=>b.dataset.comercialBinding256==='1').length;
+  }
+  // Vincula instantaneamente botões recém-desenhados. A grade SIGMA é
+  // reconstruída por outro userscript e o scan geral tem debounce de 400 ms.
+  let sigmaButtonObserver=null, sigmaObservedBody=null;
+  function sigmaObserveButtons() {
+    const body=$('#sigma-corpo-tabela');
+    if (body===sigmaObservedBody) return;
+    sigmaButtonObserver?.disconnect();
+    sigmaObservedBody=body;
+    if (!body) return;
+    sigmaButtonObserver=new MutationObserver(mutations=>{
+      if (mutations.some(m=>m.type==='childList')) sigmaBindCommercialButtons();
+    });
+    sigmaButtonObserver.observe(body,{subtree:true,childList:true});
+    sigmaBindCommercialButtons();
+  }
+  function sigmaOpenOnce(button) {
+    const id=button?.closest('tr[data-sigma-chamado-id]')?.getAttribute('data-sigma-chamado-id') || '';
+    if (id && sigmaComercialLastOpen.id===id && Date.now()-sigmaComercialLastOpen.at<500 && $('#comercial-v2-modal')?.classList.contains('open')) return true;
+    const opened=sigmaOpenChamado(button);
+    if (opened) sigmaComercialLastOpen={id,at:Date.now()};
+    return opened;
+  }
+  function sigmaHandlePointerDown(event) {
+    const button=sigmaCommercialButton(event);
+    if (!button || (event.button!=null && event.button!==0)) {sigmaComercialPress=null;return;}
+    sigmaComercialPress={button,id:event.pointerId??null,x:event.clientX,y:event.clientY};
+  }
+  function sigmaHandlePointerUp(event) {
+    const press=sigmaComercialPress;
+    sigmaComercialPress=null;
+    if (!press || (press.id!==null && event.pointerId!=null && event.pointerId!==press.id)) return;
+    const button=sigmaCommercialButton(event);
+    if (button!==press.button) return;
+    if (Math.hypot(event.clientX-press.x,event.clientY-press.y)>12) return;
+    // Abrir ANTES do click impede que um listener do SIGMA ocultando/consumindo
+    // click deixe o usuário sem janela. O click subsequente é idempotente.
+    sigmaOpenOnce(button);
+  }
+  function sigmaHandleClick(event) {
+    const target=event.target;
+    const openControl=sigmaCommercialButton(event);
+    if (!openControl && (!(target instanceof Element) || !$('#sigma-corpo-tabela'))) return;
+    if (openControl) {
+      // Impedir o aviso antigo da extensão SIGMA quando ela tenta usar uma
+      // função de abertura que não existe neste contexto.
+      blockEvent(event);
+      sigmaOpenOnce(openControl);
+      return;
+    }
+    if (target.closest('[data-acao="feedback"]')) {
+      // Não impedir abertura: apenas preparar a validação quando a janela aparecer.
+      setTimeout(sigmaSyncModal,0);return;
+    }
+    if (target.closest('#sigma-feedback-gravar')) {
+      sigmaBlockModalAction(event);return;
+    }
+    if (target.closest('#sigma-feedback-status')) {
+      sigmaSyncModal();return;
+    }
+    if (target.closest('.sigma-check-lote, .sigma-check-item, #sigma-selecao-todos')) return;
+    if (!sigmaThirdSelected().length) return;
+    if (sigmaIsBatchElement(target) && !sigmaBatchAllowed()) {
+      blockEvent(event);
+      sigmaDebug.blocked++;sigmaDebug.lastEvent='click / lote';
+      sigmaNotice(sigmaBatchMessage());
+      void sigmaVerifyBatch();
+    }
+  }
+  function sigmaHandleKeydown(event) {
+    if (!['Enter',' '].includes(event.key)) return;
+    const openControl=sigmaCommercialButton(event);
+    if (openControl) {blockEvent(event);sigmaOpenOnce(openControl);return;}
+    const target=event.target;
+    if (!(target instanceof Element) || !$('#sigma-corpo-tabela')) return;
+    if (target.id==='sigma-feedback-gravar') {sigmaBlockModalAction(event);return;}
+    if (sigmaThirdSelected().length && sigmaIsBatchElement(target) && !sigmaBatchAllowed()) {
+      blockEvent(event);sigmaDebug.blocked++;
+      sigmaDebug.lastEvent='keydown / lote';
+      sigmaNotice(sigmaBatchMessage());
+      void sigmaVerifyBatch();
+    }
+  }
+  function sigmaReset() {
+    sigmaGate.token++;sigmaGate.selection='';sigmaGate.state='livre';
+    sigmaGate.pending=null;sigmaGate.failures=[];
+    sigmaGate.modalId='';sigmaGate.modalKey='';sigmaGate.modalProtected=false;
+    sigmaDebug.batchState='livre';
+  }
+  function sigmaScan() {
+    sigmaDebug.gradeDetected=Boolean($('#sigma-corpo-tabela'));
+    if (!sigmaDebug.gradeDetected) return;
+    sigmaObserveButtons();
+    sigmaBindCommercialButtons();
+    sigmaSyncModal();
+    sigmaSyncBatchControls();
+  }
+  let sigmaHandlersInstalled=false;
+  function installSigmaProtection() {
+    if (sigmaHandlersInstalled) return;
+    sigmaHandlersInstalled=true;
+    window.addEventListener('change',sigmaHandleChange,{capture:true});
+    window.addEventListener('pointerdown',sigmaHandlePointerDown,{capture:true,passive:true});
+    window.addEventListener('pointerup',sigmaHandlePointerUp,{capture:true,passive:true});
+    window.addEventListener('pointercancel',()=>{sigmaComercialPress=null;},{capture:true,passive:true});
+    window.addEventListener('click',sigmaHandleClick,{capture:true});
+    window.addEventListener('keydown',sigmaHandleKeydown,{capture:true});
+    // A extensão SIGMA redesenha linhas/menus dinamicamente; scan() acompanha.
+    console.info('[Comercial V2.5.8] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
   }
 
   function timeString(ts) {
@@ -662,7 +1303,7 @@
       .comercial-v2-button:hover{background:#ffd7e7!important;border-color:#d91e74!important}.comercial-v2-button img{width:18px!important;height:18px!important;display:block!important;border-radius:4px!important}
       .chamado-item[data-comercial-status='aberta'] .comercial-box-head::after{content:'🔒';margin-left:4px;font-size:12px}
       .cv-backdrop{display:none;position:fixed;inset:0;z-index:2147483644;background:#111827a6;align-items:center;justify-content:center;padding:12px;font:13px system-ui,Arial;color:#18243a}
-      .cv-backdrop.open{display:flex}.cv-window{background:#fff;width:min(710px,100%);max-height:94vh;overflow:auto;border-radius:15px;box-shadow:0 22px 70px #0006}
+      #comercial-v2-modal.cv-backdrop.open{display:flex!important;visibility:visible!important;opacity:1!important}.cv-window{background:#fff;width:min(710px,100%);max-height:94vh;overflow:auto;border-radius:15px;box-shadow:0 22px 70px #0006}
       .cv-header{display:flex;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid #e5e7eb}.cv-header img{width:42px;height:42px;border-radius:12px}.cv-header strong{font-size:18px}.cv-header small{display:block;color:#687386}.cv-header button{margin-left:auto}
       .cv-content{display:grid;gap:12px;padding:18px}.cv-info{border:1px solid #dbeafe;background:#eff6ff;color:#1e3a8a;padding:10px 12px;border-radius:12px;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
       .cv-content label{display:grid;gap:5px;font-size:12px;font-weight:700}.cv-content select,.cv-content input,.cv-content textarea{box-sizing:border-box;width:100%;padding:9px 10px;color:#162238;background:white;border:1px solid #d4dce9;border-radius:8px;font:13px system-ui}
@@ -711,7 +1352,7 @@
     const modal = document.createElement('div');
     modal.id = 'comercial-v2-modal'; modal.className = 'cv-backdrop';
     modal.innerHTML = `<div class="cv-window" role="dialog" aria-modal="true" aria-label="Comercial V2">
-      <div class="cv-header"><img src="${ICON}" alt=""><div class="cv-header-copy"><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.4.7</span></small><div id="cv-session-text" class="cv-header-account" aria-live="polite">Verificando login...</div></div><button class="cv-button" id="cv-close" type="button" aria-label="Fechar Comercial">✕</button></div>
+      <div class="cv-header"><img src="${ICON}" alt=""><div class="cv-header-copy"><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.5.8 TESTE</span></small><div id="cv-session-text" class="cv-header-account" aria-live="polite">Verificando login...</div></div><button class="cv-button" id="cv-close" type="button" aria-label="Fechar Comercial">✕</button></div>
       <div class="cv-content">
         <div class="cv-info" id="cv-info"></div>
         <a id="cv-history-link" class="cv-button" style="text-align:center;display:block;text-decoration:none" target="_blank" rel="noopener noreferrer" href="https://unix-page.github.io/comercial/">Ver linha do tempo completa desta NF ↗</a>
@@ -904,28 +1545,59 @@
     };
     return messages[e?.code] || e?.message || 'Não foi possível entrar com Google.';
   }
+  // V2.5.8: compatibilidade com a grade SIGMA. O modal já recebia a
+  // classe open, mas o CSS da página podia manter display:none. Uma regra
+  // inline com !important, aplicada APENAS na abertura, tem precedência sobre
+  // as folhas de estilo da grade. Na saída restauramos o estilo anterior.
+  function setComercialModalVisible(visible) {
+    const modal=$('#comercial-v2-modal');
+    if (!modal) return false;
+    if (visible) {
+      // Evita que um painel/pai oculto esconda a janela.
+      if (modal.parentElement!==document.body) document.body.appendChild(modal);
+      modal.classList.add('open');
+      modal.style.setProperty('display','flex','important');
+      modal.style.setProperty('visibility','visible','important');
+      modal.style.setProperty('opacity','1','important');
+      modal.style.setProperty('pointer-events','auto','important');
+      modal.style.setProperty('position','fixed','important');
+      modal.style.setProperty('z-index','2147483644','important');
+    } else {
+      modal.classList.remove('open');
+      for (const property of ['display','visibility','opacity','pointer-events','position','z-index']) {
+        modal.style.removeProperty(property);
+      }
+    }
+    return true;
+  }
   function close(force = false) {
     if (state.busy && force !== true) return;
-    $('#comercial-v2-modal')?.classList.remove('open');
+    setComercialModalVisible(false);
     clearLoginFields();
     state.card = null; state.data = null; state.selected = null; state.viewToken++;
     $('#cv-manage-overlay')?.classList.remove('open');
     $('#cv-auth-overlay')?.classList.remove('open');
+  }
+  // Fonte única de dados visuais do modal, para Kanban e grade SIGMA.
+  function fillCardInfo(data) {
+    const info = $('#cv-info');
+    if (!info || !data) return;
+    info.innerHTML = `<div><b>Chave:</b> ${escape(data.chave)}</div>
+      <div><b>NF:</b> ${escape(data.numeroNf)} • <b>CNPJ:</b> ${escape(data.cnpj)}</div>
+      <div><b>Infradesk:</b> ${escape(data.chamadoInfradeskId||'—')} • ${escape(data.statusInfradesk||'—')}</div>
+      <div><b>Empresa:</b> ${escape(data.empresa||'—')}</div>
+      <div><b>Categoria da nota:</b> ${escape(data.categoriaNota||'—')}</div>
+      <div><b>Fornecedor:</b> ${escape(data.fornecedorTexto||data.fornecedorNome||'—')}</div>`;
   }
   async function openCard(card) {
     const data = extract(card);
     if (!data) { alertUser('Chave de NF-e ausente ou inválida. Confira os 44 dígitos.',true); return; }
     const token = ++state.viewToken;
     state.card = card; state.data = data; state.selected = null; state.autoDetails = ''; state.mode = 'escolher';
-    $('#cv-info').innerHTML = `<div><b>Chave:</b> ${escape(data.chave)}</div>
-      <div><b>NF:</b> ${escape(data.numeroNf)} • <b>CNPJ:</b> ${escape(data.cnpj)}</div>
-      <div><b>Infradesk:</b> ${escape(data.chamadoInfradeskId||'—')} • ${escape(data.statusInfradesk||'—')}</div>
-      <div><b>Empresa:</b> ${escape(data.empresa||'—')}</div>
-      <div><b>Categoria da nota:</b> ${escape(data.categoriaNota||'—')}</div>
-      <div><b>Fornecedor:</b> ${escape(data.fornecedorTexto||data.fornecedorNome||'—')}</div>`;
+    fillCardInfo(data);
     $('#cv-text').value = '';
     $('#cv-history-link').href = 'https://unix-page.github.io/comercial/?nf=' + encodeURIComponent(data.chave);
-    $('#comercial-v2-modal').classList.add('open');
+    setComercialModalVisible(true);
     $('#cv-form').classList.add('cv-hidden');
     $('#cv-save').disabled = true;
     $('#cv-save').classList.add('cv-hidden');
@@ -1270,6 +1942,7 @@
       // Só cache local CONHECIDO: não dispara consulta em massa nem vigia cards alheios.
       renderCardFromCache(card);
     });
+    sigmaScan();
   }
   let timer=null;
   const observer=new MutationObserver(()=>{clearTimeout(timer);timer=setTimeout(scan,400);});
@@ -1277,19 +1950,23 @@
     if (!user || state.user?.uid!==user.uid) {
       state.user=user;state.profile=null;state.profileAt=0;
       state.catalog.expiresAt=0;state.buyers.clear();
-      moveGate.results.clear(); moveGate.pending.clear(); moveGate.gesture = null;
+      moveGate.results.clear(); moveGate.pending.clear(); moveGate.gesture = null; moveGate.startDenied=null;
+      sigmaReset();
       $$('.comercial-box').forEach(box=>box.remove());
     }
     // Sem leituras automáticas por card: até perfil só é carregado ao abrir o Comercial.
     renderSession();
     scan();
   });
+  // Instalar captura antes que outro userscript intercepte o clique da grade.
+  installSigmaProtection();
   function boot() {
     createUI();
     scan();
     observer.observe(document.body,{childList:true,subtree:true});
     installKanbanProtection();
-    console.info('[Comercial V2.5.0] Proteção Kanban capturando gestos no window. Diagnóstico: window.__COMERCIAL_KANBAN_DIAGNOSTICO__');
+    installSigmaProtection();
+    console.info('[Comercial V2.5.8] Oficial carregado. Modal:',!!$('#comercial-v2-modal'),'• SIGMA:', !!$('#sigma-corpo-tabela'),'• Ponte:', window.__COMERCIAL_SIGMA_BRIDGE__?.isReady());
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
