@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Comercial • Infradesk • Registro de divergências V2.5.8 TESTE (KANBAN + SIGMA)
 // @namespace    comercial/infradesk
-// @version      2.5.8
+// @version      2.5.8.1
 // @description  Piloto: mesmas ocorrências no Kanban e na grade SIGMA; abertura do Comercial diretamente pela tabela; validação da fila 6.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
