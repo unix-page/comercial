@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.5.3 TESTE (SIGMA)
+// @name         Comercial • Infradesk • Registro de divergências V2.5.4 TESTE (SIGMA)
 // @namespace    comercial/infradesk
-// @version      2.5.3
+// @version      2.5.4
 // @description  Piloto: mesmas ocorrências no Kanban e na grade SIGMA; abertura do Comercial diretamente pela tabela; validação da fila 6.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
@@ -49,7 +49,7 @@
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.5.3';
+  window.__COMERCIAL_APP_VERSION__ = '2.5.4';
   window.__COMERCIAL_TEST_BUILD__ = true;
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
@@ -100,7 +100,7 @@
   const MOVE_SERVER_TIMEOUT_MS = 8000;
   const moveGate = { results: new Map(), pending: new Map(), gesture: null };
   const moveDebug = {
-    version:'2.5.3', windowCaptureActive:false, gestures:0, blocked:0,
+    version:'2.5.4', windowCaptureActive:false, gestures:0, blocked:0,
     checks:0, lastEvent:'', lastOutcome:'', lastNote:''
   };
   window.__COMERCIAL_KANBAN_DIAGNOSTICO__ = moveDebug;
@@ -534,7 +534,7 @@
     lastNotice:'', lastNoticeAt:0
   };
   const sigmaDebug = {
-    version:'2.5.3', gradeDetected:false, selected:0, inThird:0,
+    version:'2.5.4', gradeDetected:false, selected:0, inThird:0,
     batchState:'livre', blocked:0, lastEvent:'', lastMessage:''
   };
   window.__COMERCIAL_SIGMA_DIAGNOSTICO__ = sigmaDebug;
@@ -791,6 +791,7 @@
   // Ponte SIGMA -> modal Comercial já existente no Kanban. Sem outro login,
   // sem duplicar o modal e sem depender de API interna da extensão SIGMA.
   function sigmaOpenChamado(input) {
+    // Aceita tanto a linha quanto o ID; mantém o mesmo painel do Kanban.
     const row=input instanceof Element
       ? (input.matches('#sigma-corpo-tabela tr[data-sigma-chamado-id]') ? input : input.closest('#sigma-corpo-tabela tr[data-sigma-chamado-id]'))
       : sigmaRowById(String(input ?? ''));
@@ -809,10 +810,43 @@
   }
   // API pública pequena para a extensão SIGMA também poder chamar diretamente.
   window.__COMERCIAL_SIGMA_BRIDGE__={
-    version:'2.5.3',
-    isReady:()=>Boolean(window.__COMERCIAL_APP_RUNNING__ && $('#comercial-v2-modal')),
+    version:'2.5.4',
+    isReady:()=>Boolean(window.__COMERCIAL_TEST_BUILD__ && $('#comercial-v2-modal')),
     openChamado:sigmaOpenChamado
   };
+  // SIGMA pode instalar seu próprio handler de click ANTES do nosso.
+  // A captura de pointerup é alternativa para o clique físico que um handler
+  // anterior consumir; não interfere em cliques em outros botões, e não abre
+  // quando há arrasto/seleção ou deslocamento do dedo/mouse.
+  let sigmaComercialPress=null;
+  let sigmaComercialLastOpen={id:'',at:0};
+  function sigmaCommercialButton(target) {
+    if (!(target instanceof Element)) return null;
+    return target.closest('#sigma-corpo-tabela tr[data-sigma-chamado-id] [data-acao="comercial"]');
+  }
+  function sigmaOpenOnce(button) {
+    const id=button?.closest('tr[data-sigma-chamado-id]')?.getAttribute('data-sigma-chamado-id') || '';
+    if (id && sigmaComercialLastOpen.id===id && Date.now()-sigmaComercialLastOpen.at<500) return true;
+    const opened=sigmaOpenChamado(button);
+    if (opened) sigmaComercialLastOpen={id,at:Date.now()};
+    return opened;
+  }
+  function sigmaHandlePointerDown(event) {
+    const button=sigmaCommercialButton(event.target);
+    if (!button || (event.button!=null && event.button!==0)) {sigmaComercialPress=null;return;}
+    sigmaComercialPress={button,id:event.pointerId??null,x:event.clientX,y:event.clientY};
+  }
+  function sigmaHandlePointerUp(event) {
+    const press=sigmaComercialPress;
+    sigmaComercialPress=null;
+    if (!press || (press.id!==null && event.pointerId!=null && event.pointerId!==press.id)) return;
+    const button=sigmaCommercialButton(event.target);
+    if (button!==press.button) return;
+    if (Math.hypot(event.clientX-press.x,event.clientY-press.y)>12) return;
+    // Abrir ANTES do click impede que um listener do SIGMA ocultando/consumindo
+    // click deixe o usuário sem janela. O click subsequente é idempotente.
+    sigmaOpenOnce(button);
+  }
   function sigmaHandleClick(event) {
     const target=event.target;
     if (!(target instanceof Element) || !$('#sigma-corpo-tabela')) return;
@@ -821,7 +855,7 @@
       // Impedir o aviso antigo da extensão SIGMA quando ela tenta usar uma
       // função de abertura que não existe neste contexto.
       blockEvent(event);
-      sigmaOpenChamado(openControl);
+      sigmaOpenOnce(openControl);
       return;
     }
     if (target.closest('[data-acao="feedback"]')) {
@@ -869,10 +903,13 @@
   }
   function installSigmaProtection() {
     window.addEventListener('change',sigmaHandleChange,{capture:true});
+    window.addEventListener('pointerdown',sigmaHandlePointerDown,{capture:true,passive:true});
+    window.addEventListener('pointerup',sigmaHandlePointerUp,{capture:true,passive:true});
+    window.addEventListener('pointercancel',()=>{sigmaComercialPress=null;},{capture:true,passive:true});
     window.addEventListener('click',sigmaHandleClick,{capture:true});
     window.addEventListener('keydown',sigmaHandleKeydown,{capture:true});
     // A extensão SIGMA redesenha linhas/menus dinamicamente; scan() acompanha.
-    console.info('[Comercial V2.5.3] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
+    console.info('[Comercial V2.5.4] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
   }
 
   function timeString(ts) {
@@ -1710,7 +1747,7 @@
     observer.observe(document.body,{childList:true,subtree:true});
     installKanbanProtection();
     installSigmaProtection();
-    console.info('[Comercial V2.5.3] Proteção Kanban capturando gestos no window. Diagnóstico: window.__COMERCIAL_KANBAN_DIAGNOSTICO__');
+    console.info('[Comercial V2.5.4] Teste carregado. Modal:',!!$('#comercial-v2-modal'),'• SIGMA:', !!$('#sigma-corpo-tabela'),'• Ponte:', window.__COMERCIAL_SIGMA_BRIDGE__?.isReady());
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
