@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.5.6 TESTE (KANBAN + SIGMA)
+// @name         Comercial • Infradesk • Registro de divergências V2.5.7 TESTE (KANBAN + SIGMA)
 // @namespace    comercial/infradesk
-// @version      2.5.6
+// @version      2.5.7
 // @description  Piloto: mesmas ocorrências no Kanban e na grade SIGMA; abertura do Comercial diretamente pela tabela; validação da fila 6.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
@@ -42,14 +42,23 @@
         setTimeout(()=>box.remove(),6500);
       }
     };
-    window.addEventListener('mousedown',started,{capture:true});
+    window.addEventListener('mousedown',e=>{
+      started(e);
+      if (!origin) return;
+      // Bloqueia o Sortable antes da inicialização, mesmo sem SDK Firebase.
+      if (e.target instanceof Element &&
+          !e.target.closest('button,input,select,textarea,option,[contenteditable="true"]')) {
+        if (e.cancelable) e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+    },{capture:true,passive:false});
     window.addEventListener('mousemove',moving,{capture:true,passive:false});
     window.addEventListener('mouseup',()=>{origin=null;},{capture:true});
-    console.error('[Comercial V2.5.0] Firebase compat ausente: saída da fila 6 bloqueada até corrigir o loader.');
+    console.error('[Comercial V2.5.7] Firebase compat ausente: saída da fila 6 bloqueada até corrigir o loader.');
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.5.6';
+  window.__COMERCIAL_APP_VERSION__ = '2.5.7';
   window.__COMERCIAL_TEST_BUILD__ = true;
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
@@ -93,15 +102,16 @@
   const CARD_CACHE_KEY = 'comercial_v2_card_cache_uid';
   const KANBAN_STATUS_ID = '6'; // Xabuia: Em Análise Terceiro.
   const KANBAN_STATUS_LABEL = 'em analise terceiro';
-  // Proteção FAIL-CLOSED: erro, timeout, sem sessão ou zero registros bloqueiam a saída.
-  // Só verifica ao sair geometricamente da coluna 6; clique e rearranjo interno são livres.
+  // Proteção FAIL-CLOSED: não inicia Sortable na fila 6 sem autorização.
+  // Cliques e ações continuam livres; uma tentativa de arraste exige validação.
+  // A ordenação interna da fila 6 também aguarda validação (medida conservadora).
   const MOVE_CHECK_TTL_MS = 12000; // nova tentativa imediata após resposta, sem leituras por pixel
   const MOVE_ERROR_COOLDOWN_MS = 4500; // nova tentativa de conexão após curto intervalo
   const MOVE_SERVER_TIMEOUT_MS = 8000;
-  const moveGate = { results: new Map(), pending: new Map(), gesture: null };
+  const moveGate = { results: new Map(), pending: new Map(), gesture: null, startDenied: null };
   const moveDebug = {
-    version:'2.5.6', windowCaptureActive:false, gestures:0, blocked:0,
-    checks:0, lastEvent:'', lastOutcome:'', lastNote:''
+    version:'2.5.7', windowCaptureActive:false, gestures:0, blocked:0,
+    checks:0, dragStartDenied:0, lastEvent:'', lastOutcome:'', lastNote:''
   };
   window.__COMERCIAL_KANBAN_DIAGNOSTICO__ = moveDebug;
   const state = {
@@ -401,6 +411,55 @@
     }
     return '';
   }
+  const MOVE_DISTANCE = 8; // tolerância antes de considerar uma tentativa de arraste
+  // TRAVA DE ORIGEM: bloquear o mousedown NA CAPTURA impede que o jQuery UI
+  // Sortable inicialize _mouseStart(). Parar mousemove depois de iniciar o
+  // Sortable NÃO garante que o evento de mouseup não grave o status remoto.
+  // Os outros status não passam por esta guarda.
+  function guardSortableStart(event) {
+    if (event.button !== 0) return;
+    const target=event.target instanceof Element ? event.target : null;
+    const card=eventCard(target);
+    if (!card || !isTargetCard(card)) return;
+    // Elementos interativos não devem sofrer interferência no clique.
+    // jQuery UI já ignora inputs/botões; manter abertura do Comercial intacta.
+    if (target.closest('button,input,textarea,select,option,[contenteditable="true"]')) return;
+    const data=extract(card);
+    const verdict=data?.chave ? moveVerdict(data.chave) : {status:'chave-invalida'};
+    if (verdict.status==='permitido') {
+      moveGate.startDenied=null;
+      moveDebug.lastOutcome='ARRASTE AUTORIZADO NA ORIGEM';
+      return;
+    }
+    // Bloqueia a inicialização do Sortable, não apenas o movimento visual.
+    blockEvent(event);
+    const point=gesturePoint(event);
+    moveGate.startDenied={key:data?.chave||'',nf:data?.numeroNf||'?',card,
+      x:point?.x??0,y:point?.y??0,at:Date.now(),signaled:false};
+    moveDebug.dragStartDenied++;
+    moveDebug.lastEvent='mousedown / sortable cancelado ANTES de iniciar';
+    moveDebug.lastOutcome=(verdict.status||'chave-invalida').toUpperCase()+' / bloqueado na origem';
+    // A validação/aviso será disparada SOMENTE quando tentar arrastar para
+    // fora da coluna. Um simples clique nunca dispara mensagem de bloqueio.
+  }
+  function inspectDeniedDrag(event) {
+    const g=moveGate.startDenied;
+    if (!g) return;
+    const at=gesturePoint(event);
+    if (!at) return;
+    if (Math.hypot(at.x-g.x,at.y-g.y)<MOVE_DISTANCE) return;
+    const destination=moveDestinationColumn(at);
+    if (!destination || destination===KANBAN_STATUS_ID || g.signaled) return;
+    g.signaled=true;
+    // Nunca há movimento real: Sortable não recebeu o mousedown.
+    if (!g.key) moveNotice('Comercial: chave de acesso não identificada. Movimentação bloqueada.');
+    else {
+      const verdict=moveVerdict(g.key);
+      if (verdict.status==='consultar') requestMoveVerification(g.key,g.nf);
+      else moveNotice(moveMessage(verdict,g.nf));
+    }
+  }
+  function clearDeniedDrag() { moveGate.startDenied=null; }
   function beginMoveGesture(event) {
     if (event.button != null && event.button !== 0) return;
     const card=eventCard(event.target);
@@ -505,8 +564,15 @@
     if (data?.chave) checkMoveAttempt(event,data.chave,data.numeroNf);
   }
   function installKanbanProtection() {
+    // CRÍTICO: registrar primeiro no capture, ANTES do handler do Sortable.
+    window.addEventListener('mousedown',guardSortableStart,{capture:true,passive:false});
     for (const type of ['pointerdown','mousedown','touchstart'])
       window.addEventListener(type,beginMoveGesture,{capture:true,passive:true});
+    window.addEventListener('pointermove',inspectDeniedDrag,{capture:true,passive:true});
+    window.addEventListener('mousemove',inspectDeniedDrag,{capture:true,passive:true});
+    window.addEventListener('mouseup',inspectDeniedDrag,{capture:true,passive:true});
+    for (const type of ['pointerup','mouseup','pointercancel','touchend','touchcancel'])
+      window.addEventListener(type,clearDeniedDrag,{capture:true,passive:true});
     for (const type of ['pointermove','mousemove','touchmove'])
       window.addEventListener(type,guardMoveMotion,{capture:true,passive:false});
     // Evitar limpar no pointerup antes do mouseup, que encerra o Sortable.
@@ -534,7 +600,7 @@
     lastNotice:'', lastNoticeAt:0
   };
   const sigmaDebug = {
-    version:'2.5.6', gradeDetected:false, selected:0, inThird:0,
+    version:'2.5.7', gradeDetected:false, selected:0, inThird:0,
     batchState:'livre', blocked:0, lastEvent:'', lastMessage:''
   };
   window.__COMERCIAL_SIGMA_DIAGNOSTICO__ = sigmaDebug;
@@ -856,7 +922,7 @@
   }
   // API pública pequena para a extensão SIGMA também poder chamar diretamente.
   window.__COMERCIAL_SIGMA_BRIDGE__={
-    version:'2.5.6',
+    version:'2.5.7',
     isReady:()=>Boolean(window.__COMERCIAL_TEST_BUILD__ && $('#comercial-v2-modal')),
     openChamado:sigmaOpenChamado,
     abrir:sigmaOpenChamado,
@@ -1029,7 +1095,7 @@
     window.addEventListener('click',sigmaHandleClick,{capture:true});
     window.addEventListener('keydown',sigmaHandleKeydown,{capture:true});
     // A extensão SIGMA redesenha linhas/menus dinamicamente; scan() acompanha.
-    console.info('[Comercial V2.5.6] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
+    console.info('[Comercial V2.5.7] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
   }
 
   function timeString(ts) {
@@ -1286,7 +1352,7 @@
     const modal = document.createElement('div');
     modal.id = 'comercial-v2-modal'; modal.className = 'cv-backdrop';
     modal.innerHTML = `<div class="cv-window" role="dialog" aria-modal="true" aria-label="Comercial V2">
-      <div class="cv-header"><img src="${ICON}" alt=""><div class="cv-header-copy"><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.5.6 TESTE</span></small><div id="cv-session-text" class="cv-header-account" aria-live="polite">Verificando login...</div></div><button class="cv-button" id="cv-close" type="button" aria-label="Fechar Comercial">✕</button></div>
+      <div class="cv-header"><img src="${ICON}" alt=""><div class="cv-header-copy"><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.5.7 TESTE</span></small><div id="cv-session-text" class="cv-header-account" aria-live="polite">Verificando login...</div></div><button class="cv-button" id="cv-close" type="button" aria-label="Fechar Comercial">✕</button></div>
       <div class="cv-content">
         <div class="cv-info" id="cv-info"></div>
         <a id="cv-history-link" class="cv-button" style="text-align:center;display:block;text-decoration:none" target="_blank" rel="noopener noreferrer" href="https://unix-page.github.io/comercial/">Ver linha do tempo completa desta NF ↗</a>
@@ -1859,7 +1925,7 @@
     if (!user || state.user?.uid!==user.uid) {
       state.user=user;state.profile=null;state.profileAt=0;
       state.catalog.expiresAt=0;state.buyers.clear();
-      moveGate.results.clear(); moveGate.pending.clear(); moveGate.gesture = null;
+      moveGate.results.clear(); moveGate.pending.clear(); moveGate.gesture = null; moveGate.startDenied=null;
       sigmaReset();
       $$('.comercial-box').forEach(box=>box.remove());
     }
@@ -1875,7 +1941,7 @@
     observer.observe(document.body,{childList:true,subtree:true});
     installKanbanProtection();
     installSigmaProtection();
-    console.info('[Comercial V2.5.6] Teste carregado. Modal:',!!$('#comercial-v2-modal'),'• SIGMA:', !!$('#sigma-corpo-tabela'),'• Ponte:', window.__COMERCIAL_SIGMA_BRIDGE__?.isReady());
+    console.info('[Comercial V2.5.7] Teste carregado. Modal:',!!$('#comercial-v2-modal'),'• SIGMA:', !!$('#sigma-corpo-tabela'),'• Ponte:', window.__COMERCIAL_SIGMA_BRIDGE__?.isReady());
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
