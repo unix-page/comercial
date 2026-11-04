@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.5.5 TESTE (KANBAN + SIGMA)
+// @name         Comercial • Infradesk • Registro de divergências V2.5.6 TESTE (KANBAN + SIGMA)
 // @namespace    comercial/infradesk
-// @version      2.5.5
+// @version      2.5.6
 // @description  Piloto: mesmas ocorrências no Kanban e na grade SIGMA; abertura do Comercial diretamente pela tabela; validação da fila 6.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
@@ -49,7 +49,7 @@
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.5.5';
+  window.__COMERCIAL_APP_VERSION__ = '2.5.6';
   window.__COMERCIAL_TEST_BUILD__ = true;
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
@@ -100,7 +100,7 @@
   const MOVE_SERVER_TIMEOUT_MS = 8000;
   const moveGate = { results: new Map(), pending: new Map(), gesture: null };
   const moveDebug = {
-    version:'2.5.5', windowCaptureActive:false, gestures:0, blocked:0,
+    version:'2.5.6', windowCaptureActive:false, gestures:0, blocked:0,
     checks:0, lastEvent:'', lastOutcome:'', lastNote:''
   };
   window.__COMERCIAL_KANBAN_DIAGNOSTICO__ = moveDebug;
@@ -534,7 +534,7 @@
     lastNotice:'', lastNoticeAt:0
   };
   const sigmaDebug = {
-    version:'2.5.5', gradeDetected:false, selected:0, inThird:0,
+    version:'2.5.6', gradeDetected:false, selected:0, inThird:0,
     batchState:'livre', blocked:0, lastEvent:'', lastMessage:''
   };
   window.__COMERCIAL_SIGMA_DIAGNOSTICO__ = sigmaDebug;
@@ -839,8 +839,11 @@
     sigmaDebug.lastEvent='abrir Comercial / grade SIGMA';
     sigmaDebug.lastOpened=row.getAttribute('data-sigma-chamado-id')||'';
     sigmaDebug.opens=(sigmaDebug.opens||0)+1;
+    sigmaDebug.lastKeyFinal=extract(row)?.chave?.slice(-8)||'';
     // O modal é o MESMO do Kanban. A abertura não depende do login.
-    if (!$('#comercial-v2-modal') && document.body) createUI();
+    try { if (!$('#comercial-v2-modal') && document.body) createUI(); }
+    catch(error) { sigmaDebug.lastOpenError=error?.message||String(error); console.error('[Comercial SIGMA] Erro ao montar modal:',error); sigmaNotice('Comercial: erro ao montar janela: '+sigmaDebug.lastOpenError); return false; }
+    console.info('[Comercial SIGMA] Abrindo chamado #'+sigmaDebug.lastOpened+' no modal original.');
     void openCard(row).catch(error=>{
       sigmaDebug.lastOpenError=error?.message||String(error);
       console.error('[Comercial SIGMA] Erro abrindo chamado:',error);
@@ -853,9 +856,10 @@
   }
   // API pública pequena para a extensão SIGMA também poder chamar diretamente.
   window.__COMERCIAL_SIGMA_BRIDGE__={
-    version:'2.5.5',
+    version:'2.5.6',
     isReady:()=>Boolean(window.__COMERCIAL_TEST_BUILD__ && $('#comercial-v2-modal')),
     openChamado:sigmaOpenChamado,
+    abrir:sigmaOpenChamado,
     diagnostico:()=>({...sigmaDebug,app:window.__COMERCIAL_APP_VERSION__,modal:!!$('#comercial-v2-modal')})
   };
   // SIGMA pode instalar seu próprio handler de click ANTES do nosso.
@@ -877,29 +881,65 @@
     }
     return null;
   }
-  // Handler DIRETO no botão: não depende da ordem dos listeners da grade SIGMA.
-  // Delegação global permanece como fallback para linhas inseridas dinamicamente.
+  // Vinculação direta, como no Xabuia. O pointerdown no mouse abre ANTES do
+  // evento click que o controlador SIGMA costuma consumir. No toque, aguarda o
+  // click/pointerup para não disparar ao rolar a lista.
+  // Mantém delegação e API pública como caminhos alternativos.
   function sigmaBindCommercialButtons() {
     const buttons=$$('#sigma-corpo-tabela tr[data-sigma-chamado-id] [data-acao="comercial"]');
     for (const button of buttons) {
-      if (button.dataset.comercialBinding255==='1') continue;
-      button.dataset.comercialBinding255='1';
+      if (button.dataset.comercialBinding256==='1') continue;
+      button.dataset.comercialBinding256='1';
+      const invoke=(event)=>{
+        const opened=sigmaOpenOnce(button);
+        if (!opened) return;
+        if (event.cancelable) event.preventDefault();
+        event.stopImmediatePropagation?.();
+        event.stopPropagation();
+      };
+      // Mouse físico: executa antes de qualquer delegação de click da SIGMA.
+      button.addEventListener('pointerdown',event=>{
+        if (event.button!==0 || (event.pointerType && event.pointerType!=='mouse')) return;
+        sigmaDebug.lastInput='pointerdown-direto';
+        invoke(event);
+      },{capture:true});
+      // Fallback para navegadores que não disparam Pointer Events.
+      button.addEventListener('mousedown',event=>{
+        if (window.PointerEvent || event.button!==0) return;
+        sigmaDebug.lastInput='mousedown-direto';
+        invoke(event);
+      },{capture:true});
       button.addEventListener('click',event=>{
-        blockEvent(event);
-        sigmaOpenOnce(button);
+        sigmaDebug.lastInput='click-direto';
+        invoke(event);
       },{capture:true});
       button.addEventListener('keydown',event=>{
         if (event.key!=='Enter' && event.key!==' ') return;
-        blockEvent(event);
-        sigmaOpenOnce(button);
+        sigmaDebug.lastInput='teclado-direto';
+        invoke(event);
       },{capture:true});
     }
     sigmaDebug.buttonsFound=buttons.length;
-    sigmaDebug.buttonsBound=buttons.filter(b=>b.dataset.comercialBinding255==='1').length;
+    sigmaDebug.buttonsBound=buttons.filter(b=>b.dataset.comercialBinding256==='1').length;
+  }
+  // Vincula instantaneamente botões recém-desenhados. A grade SIGMA é
+  // reconstruída por outro userscript e o scan geral tem debounce de 400 ms.
+  let sigmaButtonObserver=null, sigmaObservedBody=null;
+  function sigmaObserveButtons() {
+    const body=$('#sigma-corpo-tabela');
+    if (body===sigmaObservedBody) return;
+    sigmaButtonObserver?.disconnect();
+    sigmaObservedBody=body;
+    if (!body) return;
+    sigmaButtonObserver=new MutationObserver(mutations=>{
+      if (mutations.some(m=>m.type==='childList')) sigmaBindCommercialButtons();
+    });
+    sigmaButtonObserver.observe(body,{subtree:true,childList:true});
+    sigmaBindCommercialButtons();
   }
   function sigmaOpenOnce(button) {
     const id=button?.closest('tr[data-sigma-chamado-id]')?.getAttribute('data-sigma-chamado-id') || '';
-    if (id && sigmaComercialLastOpen.id===id && Date.now()-sigmaComercialLastOpen.at<500) return true;
+    if (id && sigmaComercialLastOpen.id===id && Date.now()-sigmaComercialLastOpen.at<500 && $('#comercial-v2-modal')?.classList.contains('open')) return true;
     const opened=sigmaOpenChamado(button);
     if (opened) sigmaComercialLastOpen={id,at:Date.now()};
     return opened;
@@ -973,6 +1013,7 @@
   function sigmaScan() {
     sigmaDebug.gradeDetected=Boolean($('#sigma-corpo-tabela'));
     if (!sigmaDebug.gradeDetected) return;
+    sigmaObserveButtons();
     sigmaBindCommercialButtons();
     sigmaSyncModal();
     sigmaSyncBatchControls();
@@ -988,7 +1029,7 @@
     window.addEventListener('click',sigmaHandleClick,{capture:true});
     window.addEventListener('keydown',sigmaHandleKeydown,{capture:true});
     // A extensão SIGMA redesenha linhas/menus dinamicamente; scan() acompanha.
-    console.info('[Comercial V2.5.5] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
+    console.info('[Comercial V2.5.6] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
   }
 
   function timeString(ts) {
@@ -1245,7 +1286,7 @@
     const modal = document.createElement('div');
     modal.id = 'comercial-v2-modal'; modal.className = 'cv-backdrop';
     modal.innerHTML = `<div class="cv-window" role="dialog" aria-modal="true" aria-label="Comercial V2">
-      <div class="cv-header"><img src="${ICON}" alt=""><div class="cv-header-copy"><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.5.5 TESTE</span></small><div id="cv-session-text" class="cv-header-account" aria-live="polite">Verificando login...</div></div><button class="cv-button" id="cv-close" type="button" aria-label="Fechar Comercial">✕</button></div>
+      <div class="cv-header"><img src="${ICON}" alt=""><div class="cv-header-copy"><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.5.6 TESTE</span></small><div id="cv-session-text" class="cv-header-account" aria-live="polite">Verificando login...</div></div><button class="cv-button" id="cv-close" type="button" aria-label="Fechar Comercial">✕</button></div>
       <div class="cv-content">
         <div class="cv-info" id="cv-info"></div>
         <a id="cv-history-link" class="cv-button" style="text-align:center;display:block;text-decoration:none" target="_blank" rel="noopener noreferrer" href="https://unix-page.github.io/comercial/">Ver linha do tempo completa desta NF ↗</a>
@@ -1834,7 +1875,7 @@
     observer.observe(document.body,{childList:true,subtree:true});
     installKanbanProtection();
     installSigmaProtection();
-    console.info('[Comercial V2.5.5] Teste carregado. Modal:',!!$('#comercial-v2-modal'),'• SIGMA:', !!$('#sigma-corpo-tabela'),'• Ponte:', window.__COMERCIAL_SIGMA_BRIDGE__?.isReady());
+    console.info('[Comercial V2.5.6] Teste carregado. Modal:',!!$('#comercial-v2-modal'),'• SIGMA:', !!$('#sigma-corpo-tabela'),'• Ponte:', window.__COMERCIAL_SIGMA_BRIDGE__?.isReady());
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
