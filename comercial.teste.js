@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.5.0
+// @name         Comercial • Infradesk • Registro de divergências V2.5.1 TESTE
 // @namespace    comercial/infradesk
-// @version      2.5.0
-// @description  Controle da fila Em Análise Terceiro (6): login Comercial ativo, ao menos uma divergência aberta e respondida, nenhuma pendente; sem limitar outras filas.
+// @version      2.5.1
+// @description  Piloto: trava saída do Kanban e status na grade SIGMA (individual/lote) para a fila 6; outras filas livres.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
 // @noframes
@@ -43,7 +43,7 @@
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.5.0';
+  window.__COMERCIAL_APP_VERSION__ = '2.5.1';
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
   const CONFIG = {
@@ -93,7 +93,7 @@
   const MOVE_SERVER_TIMEOUT_MS = 8000;
   const moveGate = { results: new Map(), pending: new Map(), gesture: null };
   const moveDebug = {
-    version:'2.5.0', windowCaptureActive:false, gestures:0, blocked:0,
+    version:'2.5.1', windowCaptureActive:false, gestures:0, blocked:0,
     checks:0, lastEvent:'', lastOutcome:'', lastNote:''
   };
   window.__COMERCIAL_KANBAN_DIAGNOSTICO__ = moveDebug;
@@ -455,6 +455,329 @@
     window.addEventListener('dragover',guardNativeDrag,{capture:true,passive:false});
     window.addEventListener('click',guardMoveControl,{capture:true,passive:false});
     moveDebug.windowCaptureActive=true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // CONTROLE DA GRADE SIGMA — integração não invasiva com a interface de terceiros.
+  // Usa o HTML disponível: #sigma-corpo-tabela, checkbox .sigma-check-item,
+  // #sigma-feedback-status e #sigma-feedback-gravar.
+  // Não altera eventos de detalhes, Comercial, Xabuia, feedback ou checkbox.
+  // Não usa onSnapshot; consulta apenas NF selecionada para mudança de status.
+  // Para garantia total de lotes, inserir a mesma verificação ANTES da chamada
+  // à API no userscript que implementa "Ações em lote" (código não fornecido).
+  // ---------------------------------------------------------------------------
+  const sigmaGate = {
+    selection:'', token:0, state:'livre', failures:[], pending:null, count:0,
+    modalId:'', modalKey:'', modalProtected:false, modalNf:'',
+    lastNotice:'', lastNoticeAt:0
+  };
+  const sigmaDebug = {
+    version:'2.5.1', gradeDetected:false, selected:0, inThird:0,
+    batchState:'livre', blocked:0, lastEvent:'', lastMessage:''
+  };
+  window.__COMERCIAL_SIGMA_DIAGNOSTICO__ = sigmaDebug;
+
+  function sigmaRowStatus(row) {
+    if (!row) return '';
+    const badge=row.querySelector('.sigma-status-badge');
+    const cls=badge?.className?.match?.(/(?:^|\s)status-(\d+)(?:\s|$)/);
+    if (cls) return cls[1];
+    const raw=row.getAttribute('data-sigma-assinatura') || '';
+    if (raw) return raw.split('|')[1] || '';
+    return /em an[aá]lise terceiro/i.test(badge?.textContent||'')?'6':'';
+  }
+  function sigmaRowInfo(row) {
+    if (!row) return null;
+    const id=row.getAttribute('data-sigma-chamado-id') || '';
+    const raw=row.querySelector('[data-acao="copiar-chave"]')?.getAttribute('data-valor') ||
+      row.querySelector('.sigma-chave-linha')?.getAttribute('title') ||
+      row.querySelector('.sigma-chave-texto')?.textContent ||
+      row.getAttribute('data-sigma-assinatura') || '';
+    const keyMatch=String(raw).match(/\b\d{44}\b/);
+    const key=keyMatch ? (parseKey(keyMatch[0])?.chave || '') : '';
+    const nf=trim(row.querySelector('.sigma-nf-numero strong')?.textContent || '')
+      .replace(/^NF\s*(?:N[ºo°.]*)?\s*:?\s*/i,'') || id;
+    return {id,key,nf,status:sigmaRowStatus(row),row};
+  }
+  function sigmaRowById(id) {
+    if (!id) return null;
+    return $$('#sigma-corpo-tabela tr[data-sigma-chamado-id]')
+      .find(row=>row.getAttribute('data-sigma-chamado-id')===id) || null;
+  }
+  function sigmaSelected() {
+    return $$('#sigma-corpo-tabela .sigma-check-item:checked')
+      .map(el=>sigmaRowInfo(el.closest('tr[data-sigma-chamado-id]'))).filter(Boolean);
+  }
+  function sigmaThirdSelected() {return sigmaSelected().filter(row=>row.status==='6');}
+  function sigmaSelectionSignature(items) {
+    return [auth.currentUser?.uid||'deslogado',
+      ...items.map(x=>`${x.id}:${x.status}:${x.key}`).sort()].join('|');
+  }
+  function sigmaNotice(message,error=true) {
+    if (!message) return;
+    const now=Date.now();
+    if (message===sigmaGate.lastNotice && now-sigmaGate.lastNoticeAt<2600) return;
+    sigmaGate.lastNotice=message;sigmaGate.lastNoticeAt=now;
+    sigmaDebug.lastMessage=message;
+    moveNotice(message,error);
+  }
+  function sigmaBlockedReason(item,verdict) {
+    if (!item.key) return `Chamado #${item.id}: chave de acesso ausente ou inválida. Não é possível validar a saída da fila 6.`;
+    return moveMessage(verdict||{status:'erro'},item.nf||item.id);
+  }
+  function sigmaVerdict(item) {
+    if (!item?.key) return {status:'erro'};
+    return moveVerdict(item.key);
+  }
+  function sigmaBatchAllowed() {
+    const rows=sigmaThirdSelected();
+    if (!rows.length) return true; // sem notas da fila 6: não interferir.
+    return sigmaGate.state==='liberado' &&
+      sigmaGate.selection===sigmaSelectionSignature(sigmaSelected()) &&
+      rows.every(item=>sigmaVerdict(item).status==='permitido');
+  }
+  function sigmaBatchMessage() {
+    if (sigmaGate.failures.length) {
+      const f=sigmaGate.failures;
+      return `Ações em lote: ${f.length} nota(s) da fila Em Análise Terceiro não autorizada(s). `+
+        f.slice(0,2).join(' ') + (f.length>2?` E mais ${f.length-2} bloqueio(s).`:'');
+    }
+    return sigmaGate.state==='conferindo'
+      ? 'Ações em lote: conferindo o login e as ocorrências das notas da fila Em Análise Terceiro...'
+      : 'Ações em lote: selecione apenas notas autorizadas a sair de Em Análise Terceiro.';
+  }
+  function sigmaIsBatchElement(node) {
+    if (!(node instanceof Element) || !$('#sigma-corpo-tabela')) return false;
+    const control=node.closest('button, a, select, [role="button"], [role="option"]');
+    if (!control || control.closest('#sigma-corpo-tabela tr') || control.closest('.sigma-feedback-caixa')) return false;
+    const attr=[control.id,control.className,control.getAttribute('data-acao'),
+      control.getAttribute('name'),control.getAttribute('aria-label'),control.getAttribute('title'),
+      control.closest('[id*="sigma-lote"], [class*="sigma-lote"], [id*="sigma-batch"], [class*="sigma-batch"]')?.className]
+      .filter(Boolean).join(' ').toLowerCase();
+    const title=trim(control.textContent||'').toLowerCase();
+    // Sem HTML do cabeçalho do lote: procurar botões/menus de lote/status,
+    // sem confundir ações individuais e filtros comuns do Infradesk.
+    return /sigma/.test(attr) && /lote|batch|massa|status|mover|movimenta|finaliz/.test(attr+' '+title) ||
+      /lote|batch|massa/.test(attr) ||
+      /^(alterar status|mudar status|mover selecionad|finalizar selecionad)/.test(title);
+  }
+  function sigmaIsBatchStatusSelect(select) {
+    if (!(select instanceof HTMLSelectElement) || select.id==='sigma-feedback-status') return false;
+    const attrs=[select.id,select.name,select.className,
+      select.closest('[id*="sigma-lote"], [class*="sigma-lote"], [id*="sigma-batch"], [class*="sigma-batch"]')?.id || ''].join(' ').toLowerCase();
+    return /status/.test(attrs) && (/sigma|lote|batch|massa/.test(attrs));
+  }
+  function sigmaSetOptions(select,allowed) {
+    if (!select) return;
+    for (const option of Array.from(select.options)) {
+      if (!option.hasAttribute('data-comercial-original-disabled'))
+        option.setAttribute('data-comercial-original-disabled',option.disabled?'1':'0');
+      const originallyDisabled=option.getAttribute('data-comercial-original-disabled')==='1';
+      const next=originallyDisabled || (!allowed && option.value!=='6' && option.value!=='');
+      if (option.disabled!==next) option.disabled=next;
+    }
+  }
+  function sigmaSyncBatchControls() {
+    if (!$('#sigma-corpo-tabela')) return;
+    const selected=sigmaThirdSelected();
+    const allowed=!selected.length || sigmaBatchAllowed();
+    for (const select of Array.from(document.querySelectorAll('select')))
+      if (sigmaIsBatchStatusSelect(select)) sigmaSetOptions(select,allowed);
+  }
+  async function sigmaVerifyBatch() {
+    const items=sigmaSelected();
+    const third=items.filter(x=>x.status==='6');
+    const signature=sigmaSelectionSignature(items);
+    sigmaDebug.selected=items.length;
+    sigmaDebug.inThird=third.length;
+    const stillCached=third.every(x=>sigmaVerdict(x).status!=='consultar');
+    if (sigmaGate.selection===signature &&
+      (sigmaGate.state==='conferindo' ||
+        (stillCached && (sigmaGate.state==='liberado'||sigmaGate.state==='bloqueado')))) {
+      sigmaSyncBatchControls();
+      return sigmaGate.pending;
+    }
+    sigmaGate.token++;
+    const token=sigmaGate.token;
+    sigmaGate.selection=signature;
+    sigmaGate.failures=[];
+    sigmaGate.count=third.length;
+    if (!third.length) {
+      sigmaGate.state='livre';sigmaGate.pending=null;
+      sigmaDebug.batchState='livre';sigmaSyncBatchControls();return;
+    }
+    sigmaGate.state='conferindo';
+    sigmaDebug.batchState='conferindo';
+    sigmaSyncBatchControls();
+    if (!auth.currentUser?.uid || navigator.onLine===false) {
+      sigmaGate.state='bloqueado';
+      const msg=!auth.currentUser?.uid ? {status:'login'} : {status:'offline'};
+      sigmaGate.failures=third.map(item=>sigmaBlockedReason(item,msg));
+      sigmaDebug.batchState='bloqueado';
+      sigmaSyncBatchControls();
+      sigmaNotice(sigmaBatchMessage(),true);
+      return;
+    }
+    const job=(async()=>{
+      // Concorrência máxima 3: evita avalanche de reads no Firestore.
+      let next=0;
+      const reasons=[];
+      const worker=async()=>{
+        for (;;) {
+          const index=next++;
+          if (index>=third.length || token!==sigmaGate.token) return;
+          const item=third[index];
+          let verdict=sigmaVerdict(item);
+          if (verdict.status==='consultar') verdict=await verifyMoveByServer(item.key);
+          if (token!==sigmaGate.token) return;
+          if (verdict?.status!=='permitido') reasons.push(sigmaBlockedReason(item,verdict));
+        }
+      };
+      await Promise.all(Array.from({length:Math.min(3,third.length)},worker));
+      if (token!==sigmaGate.token || sigmaSelectionSignature(sigmaSelected())!==signature) return;
+      sigmaGate.failures=reasons;
+      sigmaGate.state=reasons.length?'bloqueado':'liberado';
+      sigmaDebug.batchState=sigmaGate.state;
+      sigmaSyncBatchControls();
+      if (reasons.length) sigmaNotice(sigmaBatchMessage(),true);
+      else sigmaNotice(`${third.length} nota(s) da fila 6 validada(s). Ações em lote autorizadas.`,false);
+    })().catch(err=>{
+      if (token!==sigmaGate.token) return;
+      sigmaGate.failures=['Erro ao conferir as notas selecionadas: '+err.message];
+      sigmaGate.state='bloqueado';sigmaDebug.batchState='bloqueado';
+      sigmaSyncBatchControls();
+    }).finally(()=>{if(token===sigmaGate.token)sigmaGate.pending=null;});
+    sigmaGate.pending=job;
+    return job;
+  }
+  function sigmaModalContext() {
+    const select=$('#sigma-feedback-status');
+    if (!select || !$('#sigma-corpo-tabela')) return null;
+    const title=trim($('#sigma-feedback-titulo')?.textContent || '');
+    const id=title.match(/#(\d+)/)?.[1] || '';
+    const item=sigmaRowInfo(sigmaRowById(id));
+    return {select,id,item,
+      protected: item ? item.status==='6' : select.value==='6',
+      key:item?.key||'',nf:item?.nf||id};
+  }
+  function sigmaSyncModal() {
+    const ctx=sigmaModalContext();
+    if (!ctx) return;
+    const changed=ctx.id!==sigmaGate.modalId || ctx.key!==sigmaGate.modalKey ||
+      ctx.protected!==sigmaGate.modalProtected;
+    sigmaGate.modalId=ctx.id;sigmaGate.modalKey=ctx.key;
+    sigmaGate.modalNf=ctx.nf;sigmaGate.modalProtected=ctx.protected;
+    let msgEl=$('#comercial-sigma-feedback-aviso');
+    if (!ctx.protected) {
+      sigmaSetOptions(ctx.select,true);
+      msgEl?.remove();return;
+    }
+    const verdict=ctx.key?moveVerdict(ctx.key):{status:'erro'};
+    const allowed=verdict.status==='permitido';
+    sigmaSetOptions(ctx.select,allowed);
+    if (!allowed && ctx.select.value!=='6') ctx.select.value='6';
+    if (!msgEl) {
+      msgEl=document.createElement('div');msgEl.id='comercial-sigma-feedback-aviso';
+      msgEl.style.cssText='margin:6px 0 0;padding:7px 9px;border-radius:5px;font:12px/1.4 system-ui';
+      ctx.select.insertAdjacentElement('afterend',msgEl);
+    }
+    msgEl.textContent=allowed
+      ? `✓ Comercial validado: ${verdict.answered||1} ocorrência(s) respondida(s), nenhuma pendente. É permitido alterar o status.`
+      : (verdict.status==='consultar'?'Conferindo login e ocorrências no Comercial...':sigmaBlockedReason({id:ctx.id,key:ctx.key,nf:ctx.nf},verdict));
+    msgEl.style.background=allowed?'#e7f7ee':'#fff0f0';
+    msgEl.style.color=allowed?'#196642':'#9b2334';
+    if ((changed || verdict.status==='consultar') && verdict.status==='consultar' &&
+        !moveGate.pending.has(ctx.key)) {
+      void verifyMoveByServer(ctx.key).then(()=>sigmaSyncModal());
+    }
+  }
+  function sigmaBlockModalAction(event) {
+    const ctx=sigmaModalContext();
+    if (!ctx?.protected || ctx.select.value==='6') return false;
+    const verdict=ctx.key?moveVerdict(ctx.key):{status:'erro'};
+    if (verdict.status==='permitido') return false;
+    blockEvent(event);
+    ctx.select.value='6';
+    sigmaDebug.blocked++;sigmaDebug.lastEvent=event.type+' / feedback';
+    sigmaSyncModal();
+    sigmaNotice(sigmaBlockedReason({id:ctx.id,key:ctx.key,nf:ctx.nf},verdict));
+    if (verdict.status==='consultar' && ctx.key)
+      void verifyMoveByServer(ctx.key).then(()=>sigmaSyncModal());
+    return true;
+  }
+  function sigmaHandleChange(event) {
+    const target=event.target;
+    if (!(target instanceof Element) || !$('#sigma-corpo-tabela')) return;
+    if (target.matches('.sigma-check-lote, .sigma-check-item, #sigma-selecao-todos')) {
+      queueMicrotask(()=>void sigmaVerifyBatch());
+      return;
+    }
+    if (target.id==='sigma-feedback-status') {
+      sigmaBlockModalAction(event);
+      return;
+    }
+    if (sigmaIsBatchStatusSelect(target) && sigmaThirdSelected().length &&
+        !sigmaBatchAllowed() && target.value!=='6' && target.value!=='') {
+      blockEvent(event);
+      // Opções não autorizadas não devem chegar ao código do SIGMA.
+      target.value=Array.from(target.options).some(x=>x.value==='')?'':'6';
+      sigmaDebug.blocked++;sigmaDebug.lastEvent='change / lote';
+      sigmaNotice(sigmaBatchMessage());
+      void sigmaVerifyBatch();
+    }
+  }
+  function sigmaHandleClick(event) {
+    const target=event.target;
+    if (!(target instanceof Element) || !$('#sigma-corpo-tabela')) return;
+    if (target.closest('[data-acao="feedback"]')) {
+      // Não impedir abertura: apenas preparar a validação quando a janela aparecer.
+      setTimeout(sigmaSyncModal,0);return;
+    }
+    if (target.closest('#sigma-feedback-gravar')) {
+      sigmaBlockModalAction(event);return;
+    }
+    if (target.closest('#sigma-feedback-status')) {
+      sigmaSyncModal();return;
+    }
+    if (target.closest('.sigma-check-lote, .sigma-check-item, #sigma-selecao-todos')) return;
+    if (!sigmaThirdSelected().length) return;
+    if (sigmaIsBatchElement(target) && !sigmaBatchAllowed()) {
+      blockEvent(event);
+      sigmaDebug.blocked++;sigmaDebug.lastEvent='click / lote';
+      sigmaNotice(sigmaBatchMessage());
+      void sigmaVerifyBatch();
+    }
+  }
+  function sigmaHandleKeydown(event) {
+    if (!['Enter',' '].includes(event.key)) return;
+    const target=event.target;
+    if (!(target instanceof Element) || !$('#sigma-corpo-tabela')) return;
+    if (target.id==='sigma-feedback-gravar') {sigmaBlockModalAction(event);return;}
+    if (sigmaThirdSelected().length && sigmaIsBatchElement(target) && !sigmaBatchAllowed()) {
+      blockEvent(event);sigmaDebug.blocked++;
+      sigmaDebug.lastEvent='keydown / lote';
+      sigmaNotice(sigmaBatchMessage());
+      void sigmaVerifyBatch();
+    }
+  }
+  function sigmaReset() {
+    sigmaGate.token++;sigmaGate.selection='';sigmaGate.state='livre';
+    sigmaGate.pending=null;sigmaGate.failures=[];
+    sigmaGate.modalId='';sigmaGate.modalKey='';sigmaGate.modalProtected=false;
+    sigmaDebug.batchState='livre';
+  }
+  function sigmaScan() {
+    sigmaDebug.gradeDetected=Boolean($('#sigma-corpo-tabela'));
+    if (!sigmaDebug.gradeDetected) return;
+    sigmaSyncModal();
+    sigmaSyncBatchControls();
+  }
+  function installSigmaProtection() {
+    window.addEventListener('change',sigmaHandleChange,{capture:true});
+    window.addEventListener('click',sigmaHandleClick,{capture:true});
+    window.addEventListener('keydown',sigmaHandleKeydown,{capture:true});
+    // A extensão SIGMA redesenha linhas/menus dinamicamente; scan() acompanha.
+    console.info('[Comercial V2.5.1] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
   }
 
   function timeString(ts) {
@@ -1270,6 +1593,7 @@
       // Só cache local CONHECIDO: não dispara consulta em massa nem vigia cards alheios.
       renderCardFromCache(card);
     });
+    sigmaScan();
   }
   let timer=null;
   const observer=new MutationObserver(()=>{clearTimeout(timer);timer=setTimeout(scan,400);});
@@ -1278,6 +1602,7 @@
       state.user=user;state.profile=null;state.profileAt=0;
       state.catalog.expiresAt=0;state.buyers.clear();
       moveGate.results.clear(); moveGate.pending.clear(); moveGate.gesture = null;
+      sigmaReset();
       $$('.comercial-box').forEach(box=>box.remove());
     }
     // Sem leituras automáticas por card: até perfil só é carregado ao abrir o Comercial.
@@ -1289,7 +1614,8 @@
     scan();
     observer.observe(document.body,{childList:true,subtree:true});
     installKanbanProtection();
-    console.info('[Comercial V2.5.0] Proteção Kanban capturando gestos no window. Diagnóstico: window.__COMERCIAL_KANBAN_DIAGNOSTICO__');
+    installSigmaProtection();
+    console.info('[Comercial V2.5.1] Proteção Kanban capturando gestos no window. Diagnóstico: window.__COMERCIAL_KANBAN_DIAGNOSTICO__');
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
