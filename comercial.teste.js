@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Comercial • Infradesk • Registro de divergências V2.5.4 TESTE (SIGMA)
+// @name         Comercial • Infradesk • Registro de divergências V2.5.5 TESTE (KANBAN + SIGMA)
 // @namespace    comercial/infradesk
-// @version      2.5.4
+// @version      2.5.5
 // @description  Piloto: mesmas ocorrências no Kanban e na grade SIGMA; abertura do Comercial diretamente pela tabela; validação da fila 6.
 // @match        https://*.infradesk.app/backend/chamados*
 // @run-at       document-end
@@ -49,7 +49,7 @@
     return;
   }
   window.__COMERCIAL_APP_RUNNING__ = true;
-  window.__COMERCIAL_APP_VERSION__ = '2.5.4';
+  window.__COMERCIAL_APP_VERSION__ = '2.5.5';
   window.__COMERCIAL_TEST_BUILD__ = true;
 
   const ICON = 'https://unix-page.github.io/comercial/comercial.png';
@@ -100,7 +100,7 @@
   const MOVE_SERVER_TIMEOUT_MS = 8000;
   const moveGate = { results: new Map(), pending: new Map(), gesture: null };
   const moveDebug = {
-    version:'2.5.4', windowCaptureActive:false, gestures:0, blocked:0,
+    version:'2.5.5', windowCaptureActive:false, gestures:0, blocked:0,
     checks:0, lastEvent:'', lastOutcome:'', lastNote:''
   };
   window.__COMERCIAL_KANBAN_DIAGNOSTICO__ = moveDebug;
@@ -534,7 +534,7 @@
     lastNotice:'', lastNoticeAt:0
   };
   const sigmaDebug = {
-    version:'2.5.4', gradeDetected:false, selected:0, inThird:0,
+    version:'2.5.5', gradeDetected:false, selected:0, inThird:0,
     batchState:'livre', blocked:0, lastEvent:'', lastMessage:''
   };
   window.__COMERCIAL_SIGMA_DIAGNOSTICO__ = sigmaDebug;
@@ -788,12 +788,45 @@
       void sigmaVerifyBatch();
     }
   }
+  // Enriquecimento opcional da grade com o HTML real do cartão Infradesk.
+  // O mesmo endpoint é usado pelo próprio Infradesk para atualizar cartões.
+  // Erro/permissão/timeout não impedem abrir o Comercial.
+  async function enrichSigmaFromInfradesk(row) {
+    const original = extract(row);
+    if (!original?.chave || !original.chamadoInfradeskId || !window.fetch || !window.DOMParser) return;
+    const token = state.viewToken;
+    const id = original.chamadoInfradeskId;
+    const abort = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timerId = abort ? setTimeout(()=>abort.abort(),3500) : null;
+    try {
+      const response = await fetch('/backend/chamados/card/' + encodeURIComponent(id), {
+        credentials:'same-origin', ...(abort?{signal:abort.signal}:{})
+      });
+      if (!response.ok) return;
+      const html = await response.text();
+      const htmlDoc = new DOMParser().parseFromString(html,'text/html');
+      const kanbanCard = htmlDoc.querySelector('.chamado-item[data-chamado-id]');
+      if (!kanbanCard || kanbanCard.getAttribute('data-chamado-id')!==id) return;
+      const full = extract(kanbanCard);
+      if (!full || full.chave!==original.chave) return;
+      if (token!==state.viewToken || state.data?.chave!==original.chave || state.data?.chamadoInfradeskId!==id) return;
+      // Preencher somente campos ausentes da lista com informações do cartão real.
+      for (const field of ['empresa','fornecedorId','descricaoInfradesk','categoriaNota','fornecedorTexto','fornecedorNome']) {
+        if (!state.data[field] && full[field]) state.data[field]=full[field];
+      }
+      fillCardInfo(state.data);
+      sigmaDebug.enriched=id;
+    } catch (e) {
+      console.debug('[Comercial SIGMA] Complemento de informações indisponível:',e?.message||e);
+    } finally {if (timerId!==null) clearTimeout(timerId);}
+  }
+
   // Ponte SIGMA -> modal Comercial já existente no Kanban. Sem outro login,
   // sem duplicar o modal e sem depender de API interna da extensão SIGMA.
   function sigmaOpenChamado(input) {
     // Aceita tanto a linha quanto o ID; mantém o mesmo painel do Kanban.
     const row=input instanceof Element
-      ? (input.matches('#sigma-corpo-tabela tr[data-sigma-chamado-id]') ? input : input.closest('#sigma-corpo-tabela tr[data-sigma-chamado-id]'))
+      ? (input.matches('tr[data-sigma-chamado-id]') ? input : input.closest('tr[data-sigma-chamado-id]'))
       : sigmaRowById(String(input ?? ''));
     if (!row) {
       moveNotice('Comercial: chamado não encontrado na grade SIGMA. Atualize a tabela.',true);
@@ -805,14 +838,25 @@
     }
     sigmaDebug.lastEvent='abrir Comercial / grade SIGMA';
     sigmaDebug.lastOpened=row.getAttribute('data-sigma-chamado-id')||'';
-    void openCard(row);
+    sigmaDebug.opens=(sigmaDebug.opens||0)+1;
+    // O modal é o MESMO do Kanban. A abertura não depende do login.
+    if (!$('#comercial-v2-modal') && document.body) createUI();
+    void openCard(row).catch(error=>{
+      sigmaDebug.lastOpenError=error?.message||String(error);
+      console.error('[Comercial SIGMA] Erro abrindo chamado:',error);
+      sigmaNotice('Comercial: não foi possível abrir a janela ('+sigmaDebug.lastOpenError+').');
+    });
+    // A lista não possui necessariamente todos os campos do cartão do Kanban.
+    // Buscar dados complementares sem atrasar a abertura nem salvar alterações.
+    void enrichSigmaFromInfradesk(row);
     return true;
   }
   // API pública pequena para a extensão SIGMA também poder chamar diretamente.
   window.__COMERCIAL_SIGMA_BRIDGE__={
-    version:'2.5.4',
+    version:'2.5.5',
     isReady:()=>Boolean(window.__COMERCIAL_TEST_BUILD__ && $('#comercial-v2-modal')),
-    openChamado:sigmaOpenChamado
+    openChamado:sigmaOpenChamado,
+    diagnostico:()=>({...sigmaDebug,app:window.__COMERCIAL_APP_VERSION__,modal:!!$('#comercial-v2-modal')})
   };
   // SIGMA pode instalar seu próprio handler de click ANTES do nosso.
   // A captura de pointerup é alternativa para o clique físico que um handler
@@ -820,9 +864,38 @@
   // quando há arrasto/seleção ou deslocamento do dedo/mouse.
   let sigmaComercialPress=null;
   let sigmaComercialLastOpen={id:'',at:0};
-  function sigmaCommercialButton(target) {
-    if (!(target instanceof Element)) return null;
-    return target.closest('#sigma-corpo-tabela tr[data-sigma-chamado-id] [data-acao="comercial"]');
+  function sigmaCommercialButton(targetOrEvent) {
+    // composedPath permite reconhecer cliques em ícones SVG e em open Shadow DOM.
+    const nodes=typeof targetOrEvent?.composedPath==='function'
+      ? targetOrEvent.composedPath() : [targetOrEvent?.target||targetOrEvent];
+    for (const node of nodes) {
+      if (!(node instanceof Element)) continue;
+      const control = node.matches('[data-acao="comercial"]')
+        ? node : node.closest('[data-acao="comercial"]');
+      if (control && control.closest('tr[data-sigma-chamado-id]') &&
+          control.closest('.sigma-grade, #sigma-corpo-tabela')) return control;
+    }
+    return null;
+  }
+  // Handler DIRETO no botão: não depende da ordem dos listeners da grade SIGMA.
+  // Delegação global permanece como fallback para linhas inseridas dinamicamente.
+  function sigmaBindCommercialButtons() {
+    const buttons=$$('#sigma-corpo-tabela tr[data-sigma-chamado-id] [data-acao="comercial"]');
+    for (const button of buttons) {
+      if (button.dataset.comercialBinding255==='1') continue;
+      button.dataset.comercialBinding255='1';
+      button.addEventListener('click',event=>{
+        blockEvent(event);
+        sigmaOpenOnce(button);
+      },{capture:true});
+      button.addEventListener('keydown',event=>{
+        if (event.key!=='Enter' && event.key!==' ') return;
+        blockEvent(event);
+        sigmaOpenOnce(button);
+      },{capture:true});
+    }
+    sigmaDebug.buttonsFound=buttons.length;
+    sigmaDebug.buttonsBound=buttons.filter(b=>b.dataset.comercialBinding255==='1').length;
   }
   function sigmaOpenOnce(button) {
     const id=button?.closest('tr[data-sigma-chamado-id]')?.getAttribute('data-sigma-chamado-id') || '';
@@ -832,7 +905,7 @@
     return opened;
   }
   function sigmaHandlePointerDown(event) {
-    const button=sigmaCommercialButton(event.target);
+    const button=sigmaCommercialButton(event);
     if (!button || (event.button!=null && event.button!==0)) {sigmaComercialPress=null;return;}
     sigmaComercialPress={button,id:event.pointerId??null,x:event.clientX,y:event.clientY};
   }
@@ -840,7 +913,7 @@
     const press=sigmaComercialPress;
     sigmaComercialPress=null;
     if (!press || (press.id!==null && event.pointerId!=null && event.pointerId!==press.id)) return;
-    const button=sigmaCommercialButton(event.target);
+    const button=sigmaCommercialButton(event);
     if (button!==press.button) return;
     if (Math.hypot(event.clientX-press.x,event.clientY-press.y)>12) return;
     // Abrir ANTES do click impede que um listener do SIGMA ocultando/consumindo
@@ -849,8 +922,8 @@
   }
   function sigmaHandleClick(event) {
     const target=event.target;
-    if (!(target instanceof Element) || !$('#sigma-corpo-tabela')) return;
-    const openControl=target.closest('#sigma-corpo-tabela [data-acao="comercial"]');
+    const openControl=sigmaCommercialButton(event);
+    if (!openControl && (!(target instanceof Element) || !$('#sigma-corpo-tabela'))) return;
     if (openControl) {
       // Impedir o aviso antigo da extensão SIGMA quando ela tenta usar uma
       // função de abertura que não existe neste contexto.
@@ -879,6 +952,8 @@
   }
   function sigmaHandleKeydown(event) {
     if (!['Enter',' '].includes(event.key)) return;
+    const openControl=sigmaCommercialButton(event);
+    if (openControl) {blockEvent(event);sigmaOpenOnce(openControl);return;}
     const target=event.target;
     if (!(target instanceof Element) || !$('#sigma-corpo-tabela')) return;
     if (target.id==='sigma-feedback-gravar') {sigmaBlockModalAction(event);return;}
@@ -898,10 +973,14 @@
   function sigmaScan() {
     sigmaDebug.gradeDetected=Boolean($('#sigma-corpo-tabela'));
     if (!sigmaDebug.gradeDetected) return;
+    sigmaBindCommercialButtons();
     sigmaSyncModal();
     sigmaSyncBatchControls();
   }
+  let sigmaHandlersInstalled=false;
   function installSigmaProtection() {
+    if (sigmaHandlersInstalled) return;
+    sigmaHandlersInstalled=true;
     window.addEventListener('change',sigmaHandleChange,{capture:true});
     window.addEventListener('pointerdown',sigmaHandlePointerDown,{capture:true,passive:true});
     window.addEventListener('pointerup',sigmaHandlePointerUp,{capture:true,passive:true});
@@ -909,7 +988,7 @@
     window.addEventListener('click',sigmaHandleClick,{capture:true});
     window.addEventListener('keydown',sigmaHandleKeydown,{capture:true});
     // A extensão SIGMA redesenha linhas/menus dinamicamente; scan() acompanha.
-    console.info('[Comercial V2.5.4] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
+    console.info('[Comercial V2.5.5] Proteção da tabela SIGMA instalada. Diagnóstico: window.__COMERCIAL_SIGMA_DIAGNOSTICO__');
   }
 
   function timeString(ts) {
@@ -1166,7 +1245,7 @@
     const modal = document.createElement('div');
     modal.id = 'comercial-v2-modal'; modal.className = 'cv-backdrop';
     modal.innerHTML = `<div class="cv-window" role="dialog" aria-modal="true" aria-label="Comercial V2">
-      <div class="cv-header"><img src="${ICON}" alt=""><div class="cv-header-copy"><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.5.3 TESTE</span></small><div id="cv-session-text" class="cv-header-account" aria-live="polite">Verificando login...</div></div><button class="cv-button" id="cv-close" type="button" aria-label="Fechar Comercial">✕</button></div>
+      <div class="cv-header"><img src="${ICON}" alt=""><div class="cv-header-copy"><strong>Abrir Comercial</strong><small>NF • Divergência Comercial <span style="color:#ad1465;font-weight:800">• Versão 2.5.5 TESTE</span></small><div id="cv-session-text" class="cv-header-account" aria-live="polite">Verificando login...</div></div><button class="cv-button" id="cv-close" type="button" aria-label="Fechar Comercial">✕</button></div>
       <div class="cv-content">
         <div class="cv-info" id="cv-info"></div>
         <a id="cv-history-link" class="cv-button" style="text-align:center;display:block;text-decoration:none" target="_blank" rel="noopener noreferrer" href="https://unix-page.github.io/comercial/">Ver linha do tempo completa desta NF ↗</a>
@@ -1367,17 +1446,23 @@
     $('#cv-manage-overlay')?.classList.remove('open');
     $('#cv-auth-overlay')?.classList.remove('open');
   }
-  async function openCard(card) {
-    const data = extract(card);
-    if (!data) { alertUser('Chave de NF-e ausente ou inválida. Confira os 44 dígitos.',true); return; }
-    const token = ++state.viewToken;
-    state.card = card; state.data = data; state.selected = null; state.autoDetails = ''; state.mode = 'escolher';
-    $('#cv-info').innerHTML = `<div><b>Chave:</b> ${escape(data.chave)}</div>
+  // Fonte única de dados visuais do modal, para Kanban e grade SIGMA.
+  function fillCardInfo(data) {
+    const info = $('#cv-info');
+    if (!info || !data) return;
+    info.innerHTML = `<div><b>Chave:</b> ${escape(data.chave)}</div>
       <div><b>NF:</b> ${escape(data.numeroNf)} • <b>CNPJ:</b> ${escape(data.cnpj)}</div>
       <div><b>Infradesk:</b> ${escape(data.chamadoInfradeskId||'—')} • ${escape(data.statusInfradesk||'—')}</div>
       <div><b>Empresa:</b> ${escape(data.empresa||'—')}</div>
       <div><b>Categoria da nota:</b> ${escape(data.categoriaNota||'—')}</div>
       <div><b>Fornecedor:</b> ${escape(data.fornecedorTexto||data.fornecedorNome||'—')}</div>`;
+  }
+  async function openCard(card) {
+    const data = extract(card);
+    if (!data) { alertUser('Chave de NF-e ausente ou inválida. Confira os 44 dígitos.',true); return; }
+    const token = ++state.viewToken;
+    state.card = card; state.data = data; state.selected = null; state.autoDetails = ''; state.mode = 'escolher';
+    fillCardInfo(data);
     $('#cv-text').value = '';
     $('#cv-history-link').href = 'https://unix-page.github.io/comercial/?nf=' + encodeURIComponent(data.chave);
     $('#comercial-v2-modal').classList.add('open');
@@ -1741,13 +1826,15 @@
     renderSession();
     scan();
   });
+  // Instalar captura antes que outro userscript intercepte o clique da grade.
+  installSigmaProtection();
   function boot() {
     createUI();
     scan();
     observer.observe(document.body,{childList:true,subtree:true});
     installKanbanProtection();
     installSigmaProtection();
-    console.info('[Comercial V2.5.4] Teste carregado. Modal:',!!$('#comercial-v2-modal'),'• SIGMA:', !!$('#sigma-corpo-tabela'),'• Ponte:', window.__COMERCIAL_SIGMA_BRIDGE__?.isReady());
+    console.info('[Comercial V2.5.5] Teste carregado. Modal:',!!$('#comercial-v2-modal'),'• SIGMA:', !!$('#sigma-corpo-tabela'),'• Ponte:', window.__COMERCIAL_SIGMA_BRIDGE__?.isReady());
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
